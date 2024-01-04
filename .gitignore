@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VSCode
+.vscode/
+.settings/
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Compiled Python files
+*.pyc
+*.pyo
+
+# Virtual environment
+venv/

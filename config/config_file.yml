@@ -1,0 +1,4 @@
+# Sample configuration file
+project_name: TemplateProject
+data_path: ./data
+log_path: ./logs
