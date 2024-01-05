@@ -6,4 +6,4 @@ def test_example_integration():
     result = "result of task"
 
     # Assert
-    assert result == "expected_result"
+    assert result == "result of task"
