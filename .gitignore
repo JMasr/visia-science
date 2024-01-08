@@ -14,9 +14,5 @@ __pycache__/
 *.iws
 *.ipr
 
-# Compiled Python files
-*.pyc
-*.pyo
-
 # Virtual environment
 venv/
