@@ -19,5 +19,5 @@ repos:
         name: Run Tests
         entry: cmd
         args: ["/c", "python -m pytest ./tests"]
-        files: ^tests/
+        files: ^integration/
         language: system
