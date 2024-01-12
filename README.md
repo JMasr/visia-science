@@ -40,6 +40,6 @@ The project can be containerized using Docker. The `Dockerfile` specifies the co
 
 The project dependencies are listed in `requirements.txt`.
 
-## Comunity
+## Community
 
 Feel free to modify and extend this template for your specific needs.

@@ -2,7 +2,7 @@
 Description
 ============
 
-This is a module for classes and functions that emulate a response of a request/event/operation of a element on the repository.
+This is a module for classes and functions that emulate an event/operation/response of a repositories' element.
 
 For example:
     - A request to get a list of objects.

@@ -29,7 +29,12 @@ class BasicResponse(BaseModel):
         :return: A readable string with all the information of the response/event.
         :rtype: str
         """
-        return f"{module} - {action} - Success: {self.success} - Message: {self.message} - Status Code: {self.status_code}"
+        return (
+            f"{module} - {action} - "
+            f"Success: {self.success} - "
+            f"Message: {self.message} - "
+            f"Status Code: {self.status_code}"
+        )
 
 
 class ListResponse(BasicResponse):
