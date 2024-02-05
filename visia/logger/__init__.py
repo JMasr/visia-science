@@ -57,14 +57,14 @@ class BasicLogger:
     """
 
     def __init__(
-        self,
-        log_folder: str,
-        log_name: str = "Visia-Scince_Logger",
-        log_file_path="app.log",
-        error_log_file_path="error.log",
-        max_log_size: int = (5 * 1024 * 1024),
-        backup_count: int = 3,
-        log_level=logging.DEBUG,
+            self,
+            log_folder: str,
+            log_name: str = "Visia-Scince_Logger",
+            log_file_path="app.log",
+            error_log_file_path="error.log",
+            max_log_size: int = (5 * 1024 * 1024),
+            backup_count: int = 3,
+            log_level=logging.DEBUG,
     ):
         # Create the root logger
         self.logger = logging.getLogger(log_name)
@@ -86,7 +86,7 @@ class BasicLogger:
         )
 
         # Create a file handler to store logs in a file
-        os.makedirs(os.path.dirname(log_folder), exist_ok=True)
+        os.makedirs(log_folder, exist_ok=True)
         file_handler = RotatingFileHandler(
             self.log_file_path, maxBytes=self.max_log_size, backupCount=backup_count
         )

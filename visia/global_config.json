@@ -1,0 +1,20 @@
+{
+  "root_path": "C:\\Users\\jmram\\OneDrive\\Documents\\GitHub\\visia-science",
+  "log_config": {"log_folder": "C:\\Users\\jmram\\OneDrive\\Documents\\GitHub\\visia-science\\logs",
+                 "log_name": "Visia-Scince_Logger",
+                 "log_file_path": "app.log",
+                 "error_log_file_path": "error.log",
+                 "max_log_size": 5242880,
+                 "backup_count": 3,
+                 "log_level": "logging.DEBUG"
+                },
+
+    "db_config": {"db_type":  "mongodb",
+                  "db_engine": "pymongo",
+                  "db_name": "Odyssey_2024",
+                  "db_user": "root",
+                  "db_password": "root",
+                  "db_host": "localhost",
+                  "db_port": 27017,
+                  "db_uri": "mongodb://localhost:27017/"}
+}
