@@ -4,8 +4,6 @@ import json
 import os
 from typing import Any
 
-from pydantic import BaseModel
-
 
 class BasicConfig:
     """
@@ -17,8 +15,10 @@ class BasicConfig:
 
     def __init__(self, path_to_config: str):
         self.path_to_config: str = path_to_config
-        self.log_config = None
 
+        self.db_config = None
+        self.log_config = None
+        self.data_config = None
         self.load_config()
 
     def load_config(self):
@@ -34,7 +34,7 @@ class BasicConfig:
             for key, value in config_json.items():
                 setattr(self, key, value)
 
-    def model_dump(self, **kwargs) -> dict:
+    def model_dump(self) -> dict:
         """
         Dump the model data as a dictionary.
         :return: A dict with the model data.
