@@ -1,18 +1,19 @@
+import os
+import pickle
 from enum import Enum
 from typing import Optional, Annotated, Any
 
-import os
 import cv2
 import librosa
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import textgrids
-from bson import ObjectId
 from pydantic import BaseModel, FilePath, Field, ConfigDict
+from sklearn.preprocessing import LabelEncoder
 
-import visia.pydantic_numpy.dtype as pnd
 from visia.files import identify_file_type, get_file_format, read_audio
-from visia.pydantic_numpy.ndarray import NDArray
 
 
 class DataTypes(Enum):
@@ -56,9 +57,6 @@ class AudioStream(BaseStream):
     :type sample_rate: int
     :param duration: Duration of the audio.
     :type duration: float
-    :param samples: Samples of the audio.
-    :type samples: np.ndarray
-
     """
     audio_format: Annotated[str, Field(pattern=r"^[a-zA-Z0-9]+$")]
     sample_rate: Annotated[int, Field(strict=True, gt=0)]
@@ -75,6 +73,7 @@ class AudioStream(BaseStream):
 
         print(f"Reading audio file: {file_path}")
         s, sr = read_audio(file_path)
+        serialized_data = pickle.dumps(s)
 
         id_media = os.path.basename(file_path).split(".")[0]
         audio_format = get_file_format(file_path)[1:]
@@ -83,7 +82,7 @@ class AudioStream(BaseStream):
                    sample_rate=sr,
                    channels=1,
                    duration=librosa.get_duration(y=s, sr=sr),
-                   data=s)
+                   data=serialized_data)
 
 
 class VideoStream(BaseStream):
@@ -94,13 +93,10 @@ class VideoStream(BaseStream):
     :type video_format: str
     :param duration: Duration of the video.
     :type duration: float
-    :param frames: Frames of the video.
-    :type frames: np.ndarray
     :param frame_rate: Frame rate of the video.
     :type frame_rate: int
     """
     video_format: Annotated[str, Field(pattern=r"^[a-zA-Z0-9]+$")]
-    frames: NDArray[pnd.float32]
     duration: Annotated[float, Field(strict=True, gt=0)]
     frame_rate: Annotated[int, Field(strict=True, gt=0)]
 
@@ -121,12 +117,16 @@ class VideoStream(BaseStream):
             else:
                 break
         video.release()
+
+        np_frames = np.array(frames)
+        serialized_data = pickle.dumps(np_frames)
+
         return cls(id=os.path.basename(file_path).split(".")[0],
                    video_format=get_file_format(file_path),
                    codec=video.getBackendName(),
                    duration=video.get(cv2.CAP_PROP_POS_MSEC),
                    frame_rate=video.get(cv2.CAP_PROP_FPS),
-                   data=np.array(frames),)
+                   data=serialized_data,)
 
 
 class TextStream(BaseStream):
@@ -135,12 +135,8 @@ class TextStream(BaseStream):
 
     :param id: ID of the text file.
     :type id: str
-    :param text_stream: Text stream.
-    :type text_stream: pd.DataFrame
-
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    text_stream: Optional[pd.DataFrame] = None
 
     @classmethod
     def from_file_path(cls, file_path: str) -> "TextStream":
@@ -164,7 +160,7 @@ class TextStream(BaseStream):
             df_txt = pd.DataFrame(lines)
 
         return cls(id=file_name,
-                   text_stream=df_txt)
+                   data=df_txt)
 
 
 class AudioEvent(BaseModel):
@@ -267,3 +263,56 @@ class MediaFile(BaseModel):
             self.metadata_events[metadata_name] = metadata_content
         else:
             raise ValueError(f"Error event type *{event_type}* not recognized")
+
+
+class DataFrameAnalyzer:
+    def __init__(self):
+        self.df = None
+
+    def generate_correlation_report(self,df, exclude_columns):
+        # Generate correlation matrix
+        df_ = df.copy()
+        if exclude_columns:
+            df_ = df_.drop(exclude_columns, axis=1)
+
+        df_, labels_map = self.label_encode_categorical(df_)
+        corr_matrix = df_.corr()
+
+        # Plot heatmap
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(corr_matrix, annot=True, cmap="coolwarm", fmt=".2f", linewidths=0.5)
+        plt.title("Correlation Matrix")
+        plt.show()
+
+    @staticmethod
+    def label_encode_categorical(df: pd.DataFrame) -> [pd.DataFrame, dict]:
+        label_encoder_dict = {}
+        df_copy = df.copy()
+        for column in df_copy.select_dtypes(include=['object']).columns:
+            label_encoder = LabelEncoder()
+            df_copy[column] = label_encoder.fit_transform(df_copy[column])
+            label_encoder_dict[column] = dict(
+                zip(label_encoder.classes_, label_encoder.transform(label_encoder.classes_)))
+            print(f"Label encoding for column {column}: {label_encoder_dict[column]}")
+        return df_copy, label_encoder_dict
+
+    @staticmethod
+    def generate_summary_report(df):
+        # Display summary statistics
+        summary = df.describe(include="all").T
+        summary["unique_values"] = df.nunique()
+        summary["missing_values"] = df.isnull().sum()
+        print(summary)
+
+    @staticmethod
+    def compute_data_quality_measures(df):
+        # Compute data quality measures
+        data_quality_measures = pd.DataFrame()
+        data_quality_measures["column"] = df.columns
+        data_quality_measures["data_type"] = df.dtypes.values
+        data_quality_measures["unique_values"] = df.nunique().values
+        data_quality_measures["missing_values"] = df.isnull().sum().values
+        data_quality_measures["percentage_missing"] = (
+                (df.isnull().sum() / len(df)) * 100
+        ).values
+        print(data_quality_measures)
