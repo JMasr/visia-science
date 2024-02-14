@@ -13,12 +13,11 @@ from typing import Annotated, Optional, Any
 import librosa.feature
 import numpy as np
 import pandas as pd
-from numpy import mean, std
+from mlflow import MlflowClient
 from pydantic import BaseModel, Field, ConfigDict
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import make_scorer, f1_score, recall_score, roc_auc_score, precision_score
-from sklearn.model_selection import StratifiedKFold, KFold, cross_val_score, cross_validate
+from sklearn.metrics import make_scorer, f1_score, recall_score, precision_score
+from sklearn.model_selection import KFold, cross_validate
 from tqdm import tqdm
 
 from visia.config.visia_config import BasicConfig
@@ -26,7 +25,7 @@ from visia.database import BasicDataBase
 from visia.dataset.dataset import AudioStream
 from visia.files import read_audio
 from visia.logger import BasicLogger
-from visia.responses.basic_responses import BasicResponse
+from visia.responses.basic_responses import BasicResponse, DataResponse
 
 
 class BasicExperiment:
@@ -47,6 +46,14 @@ class BasicExperiment:
         # Set the logger
         self.logger = BasicLogger(**self.exp_config.log_config).get_logger()
         self.logger.info(f"Logger created - 200 - Parameters: {self.exp_config.model_dump()}\n")
+
+        # Set the MLFlow server
+        self.mlflow_server = MLFlowServer(mlflow_config=self.exp_config.mlflow_config)
+        mlflow_response = self.mlflow_server.is_up()
+        if mlflow_response.success:
+            self.logger.info(mlflow_response.get_as_str(module="MainModule", action="Check MLFlow server"))
+        else:
+            self.logger.error(mlflow_response.get_as_str(module="MainModule", action="Check MLFlow server"))
 
         # Set the dataset
         self.dataset = DataSet(**self.exp_config.data_config)
@@ -71,30 +78,6 @@ class BasicExperiment:
         else:
             self.logger.error(db_response.get_as_str(module="MainModule", action="Load data to database"))
 
-        df_train = self.dataset.metadata[self.dataset.metadata["DataSet"] == "train"]
-        # Take a subset of the data
-        df_train = df_train.sample(frac=0.01, random_state=42)
-        X = np.array([])
-        y = np.array([])
-        # Iterate over the rows
-        for i, r in tqdm(df_train.iterrows(), total=len(df_train), desc="Processing data"):
-            # Load the audio
-            path_to_audio = r["FilePath"]
-            s, sr = read_audio(path_to_audio)
-            mfcc = librosa.feature.mfcc(y=s, sr=sr)
-            mfcc = mfcc.T
-
-            # Create an array size of the mfcc
-            label = np.array([r["Label"] for _ in range(mfcc.shape[0])])
-
-            # Add the mfcc and the label to the X and y arrays
-            if X.size == 0:
-                X = mfcc
-                y = label
-            else:
-                X = np.vstack((X, mfcc))
-                y = np.vstack((y, label))
-
         # Prepare the cross-validation procedure
         cv = KFold(n_splits=2, random_state=42, shuffle=True)
         # Create model
@@ -105,15 +88,25 @@ class BasicExperiment:
                    'recall': make_scorer(recall_score, average='weighted', zero_division=1),
                    'precision': make_scorer(precision_score, average='weighted', zero_division=1),
                    'sensitivity': make_scorer(recall_score, average='weighted', zero_division=1)}
-        # Evaluate model
-        scores = cross_validate(model, X, y, scoring=scoring, cv=cv, n_jobs=-1)
+        # Train the model
+        df_train = self.dataset.metadata.copy()
+        self.logger.info("Training model...")
+        train_response = self.train_loop(cv=cv,
+                                         model=model,
+                                         scoring=scoring,
+                                         df_to_train=df_train)
+        if train_response.success:
+            self.logger.info(train_response.get_as_str(module="MainModule", action="Train model"))
+            # report performance
+            scores = train_response.data.get("scoring")
+            print('Accuracy: %.3f (%.3f)' % (scores['test_accuracy'].mean(), scores['test_accuracy'].std()))
+            print('F1-score: %.3f (%.3f)' % (scores['test_f1'].mean(), scores['test_f1'].std()))
+            print('Recall: %.3f (%.3f)' % (scores['test_recall'].mean(), scores['test_recall'].std()))
+            print('Precision: %.3f (%.3f)' % (scores['test_precision'].mean(), scores['test_precision'].std()))
+            print('Sensitivity: %.3f (%.3f)' % (scores['test_sensitivity'].mean(), scores['test_sensitivity'].std()))
 
-        # report performance
-        print('Accuracy: %.3f (%.3f)' % (scores['test_accuracy'].mean(), scores['test_accuracy'].std()))
-        print('F1-score: %.3f (%.3f)' % (scores['test_f1'].mean(), scores['test_f1'].std()))
-        print('Recall: %.3f (%.3f)' % (scores['test_recall'].mean(), scores['test_recall'].std()))
-        print('Precision: %.3f (%.3f)' % (scores['test_precision'].mean(), scores['test_precision'].std()))
-        print('Sensitivity: %.3f (%.3f)' % (scores['test_sensitivity'].mean(), scores['test_sensitivity'].std()))
+        else:
+            self.logger.error(train_response.get_as_str(module="MainModule", action="Train model"))
 
     def data2database(self) -> BasicResponse:
         """
@@ -152,12 +145,12 @@ class BasicExperiment:
                     del audio
 
                 # Check if the data was loaded
-                response = self.check_if_dataset_is_in_database()
-                if response.success:
+                db_response = self.check_if_dataset_is_in_database()
+                if db_response.success:
                     # Update the metadata
                     self.dataset.metadata = metadata
 
-                return response
+                return db_response
 
             except Exception as e:
                 return BasicResponse(success=False,
@@ -181,6 +174,94 @@ class BasicExperiment:
         except Exception as e:
             return BasicResponse(success=False, status_code=500,
                                  message=f"Error checking if the dataset is in the database: {e}")
+
+    @staticmethod
+    def train_loop(df_to_train: pd.DataFrame, model: Any, cv: Any, scoring: dict) -> BasicResponse:
+        """
+        Train the model with the dataset.
+        """
+        try:
+            # Copy the dataframe
+            df_train = df_to_train.copy()
+
+            x = np.array([])
+            y = np.array([])
+            # Iterate over the rows
+            for i, r in tqdm(df_train.iterrows(), total=len(df_train), desc="Processing data"):
+                # Load the audio
+                path_to_audio = r["FilePath"]
+                s, sr = read_audio(path_to_audio)
+                mfcc = librosa.feature.mfcc(y=s, sr=sr)
+                mfcc = mfcc.T
+
+                # Create an array size of the mfcc
+                label = np.array([r["Label"] for _ in range(mfcc.shape[0])])
+
+                # Add the mfcc and the label to the X and y arrays
+                if x.size == 0:
+                    x = mfcc
+                    y = label
+                else:
+                    x = np.vstack((x, mfcc))
+                    y = np.vstack((y, label))
+
+            # Evaluate model
+            scores = cross_validate(model, x, y, scoring=scoring, cv=cv, n_jobs=-1, verbose=1)
+
+            return DataResponse(success=True,
+                                status_code=200,
+                                message="Model trained successfully",
+                                data={"model": model,
+                                      "scoring": scores})
+        except Exception as e:
+            return BasicResponse(success=False,
+                                 status_code=500,
+                                 message=f"Error training the model: {e}")
+
+
+class MLFlowServer:
+    """
+    Class to manage the MLFlow server.
+    """
+
+    def __init__(self, mlflow_config=None):
+        """
+        Initialize the MlFlow server with a specified configuration.
+
+        :param mlflow_config: Path to the configuration file.
+        :type mlflow_config: str
+        """
+
+        if mlflow_config is None:
+            mlflow_config = {}
+
+        # Set the MLFlow server
+        self.mlflow_url = mlflow_config.get("mlflow_url", "http://localhost:5000")
+        self.mlflow_experiment_name = mlflow_config.get("mlflow_experiment_name", f"Experiment_{time.time()}")
+        # Set the MLFlow client
+        self.mlflow_client = MlflowClient(tracking_uri=self.mlflow_url)
+
+    def is_up(self) -> BasicResponse:
+        """
+        Check if there is any MLFlow server running.
+        """
+        experiments = self.mlflow_client.search_experiments()
+        if experiments:
+            return BasicResponse(success=True, status_code=200, message=f"Actives experiments: {len(experiments)}")
+        else:
+            return BasicResponse(success=False, status_code=404, message=f"No active server at: {self.mlflow_url}")
+
+    def list_experiments(self) -> BasicResponse:
+        """
+        List all the experiments in the MLFlow server.
+
+        :return: BasicResponse object.
+        """
+        try:
+            all_experiments = self.mlflow_client.search_experiments()
+            return BasicResponse(success=True, status_code=200, message=all_experiments)
+        except Exception as e:
+            return BasicResponse(success=False, status_code=500, message=f"Error listing experiments: {e}")
 
 
 class DataSet(BaseModel):
@@ -270,36 +351,6 @@ class DataSet(BaseModel):
 
         except Exception as e:
             return BasicResponse(success=False, status_code=500, message=f"Error loading the dataset: {e}")
-
-    def create_kfold_subsets(self, n_splits: int = 4, random_state: int = 42) -> pd.DataFrame:
-        """
-        Create k-fold subsets for the dataset.
-
-        :param n_splits: Number of splits for the k-fold cross-validation.
-        :type n_splits: int
-        :param random_state: Random state for the k-fold cross-validation.
-        :type random_state: int
-        :return: DataFrame with the k-fold subsets.
-        :rtype: pd.DataFrame
-        """
-        # Extract features and target variable
-        df_final = self.metadata.copy()
-        train_indices = df_final[df_final['DataSet'] == 'train']
-        dev_indices = df_final[df_final['DataSet'] == 'dev']
-
-        # Initialize KFold
-        kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-
-        # Create a list to store the folds
-        folds = []
-
-        # Iterate over the folds
-        for train_fold, dev_fold in kf.split(train_indices):
-            fold_dict = {
-                "train": train_indices[train_fold].tolist(),
-            }
-            folds.append(fold_dict)
-        return df_final
 
 
 def standardization_method_odyssey(df_metadata: pd.DataFrame) -> [pd.DataFrame, dict]:
