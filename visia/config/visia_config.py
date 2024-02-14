@@ -18,6 +18,7 @@ class BasicConfig:
 
         self.db_config = None
         self.log_config = None
+        self.mlflow_config = None
         self.data_config = None
         self.load_config()
 

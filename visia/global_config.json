@@ -11,6 +11,12 @@
     "log_level": "logging.DEBUG"
   },
 
+  "mlflow_config": {
+    "mlflow_tracking_uri": "http://localhost:5000",
+    "mlflow_experiment_name": "Odyssey2024",
+    "mlflow_run_name": "Odyssey2024"
+  },
+
   "db_config": {
     "db_type":  "mongodb",
     "db_engine": "pymongo",
