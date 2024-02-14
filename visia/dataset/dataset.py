@@ -70,8 +70,6 @@ class AudioStream(BaseStream):
         :param file_path: Path to the audio file.
         :type file_path: str
         """
-
-        print(f"Reading audio file: {file_path}")
         s, sr = read_audio(file_path)
         serialized_data = pickle.dumps(s)
 
