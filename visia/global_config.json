@@ -26,11 +26,18 @@
   "data_config": {
     "data_name": "Odyssey2024",
     "data_version": "1.0",
+    "data_extension": "wav",
     "csv_metadata": "/home/jose_m/PycharmProjects/visia-science/data/Odyssey/labels_consensus.csv",
     "csv_extra": "/home/jose_m/PycharmProjects/visia-science/data/Odyssey/labels_detailed.csv",
-    "data_path": "/media/jose_m/Box/Odyssey/Audios/Audios",
+    "data_path": "/media/jose_m/Box1/Odyssey/Audios/Audios",
     "data_options": {
-      "standardize": false
+      "standardize": true
+    },
+    "data_description": {
+      "Id": "FileName",
+      "Path": "FilePath",
+      "Label": "EmoClass",
+      "SplitSet": "SplitSet"
     }
   }
 }
