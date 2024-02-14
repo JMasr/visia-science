@@ -7,15 +7,24 @@ This is a module for running the Visia-Science main Pipeline.
 
 import argparse
 import os
-from typing import Annotated, Optional
+import time
+from typing import Annotated, Optional, Any
 
+import librosa.feature
+import numpy as np
 import pandas as pd
+from numpy import mean, std
 from pydantic import BaseModel, Field, ConfigDict
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import make_scorer, f1_score, recall_score, roc_auc_score, precision_score
+from sklearn.model_selection import StratifiedKFold, KFold, cross_val_score, cross_validate
 from tqdm import tqdm
 
 from visia.config.visia_config import BasicConfig
 from visia.database import BasicDataBase
 from visia.dataset.dataset import AudioStream
+from visia.files import read_audio
 from visia.logger import BasicLogger
 from visia.responses.basic_responses import BasicResponse
 
@@ -41,7 +50,7 @@ class BasicExperiment:
 
         # Set the dataset
         self.dataset = DataSet(**self.exp_config.data_config)
-        dset_response = self.dataset.load_dataset()
+        dset_response = self.dataset.load_dataset(standardization_method_odyssey)
         if dset_response.success:
             self.logger.info(dset_response.get_as_str(module="MainModule", action="Load dataset"))
         else:
@@ -55,14 +64,71 @@ class BasicExperiment:
         else:
             self.logger.error(db_response.get_as_str(module="MainModule", action="Check connection"))
 
-    def data2database(self):
+        # Load the data to the database
+        db_response = self.data2database()
+        if db_response.success:
+            self.logger.info(db_response.get_as_str(module="MainModule", action="Load data to database"))
+        else:
+            self.logger.error(db_response.get_as_str(module="MainModule", action="Load data to database"))
+
+        df_train = self.dataset.metadata[self.dataset.metadata["DataSet"] == "train"]
+        # Take a subset of the data
+        df_train = df_train.sample(frac=0.01, random_state=42)
+        X = np.array([])
+        y = np.array([])
+        # Iterate over the rows
+        for i, r in tqdm(df_train.iterrows(), total=len(df_train), desc="Processing data"):
+            # Load the audio
+            path_to_audio = r["FilePath"]
+            s, sr = read_audio(path_to_audio)
+            mfcc = librosa.feature.mfcc(y=s, sr=sr)
+            mfcc = mfcc.T
+
+            # Create an array size of the mfcc
+            label = np.array([r["Label"] for _ in range(mfcc.shape[0])])
+
+            # Add the mfcc and the label to the X and y arrays
+            if X.size == 0:
+                X = mfcc
+                y = label
+            else:
+                X = np.vstack((X, mfcc))
+                y = np.vstack((y, label))
+
+        # Prepare the cross-validation procedure
+        cv = KFold(n_splits=2, random_state=42, shuffle=True)
+        # Create model
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        # Set the scoring
+        scoring = {'accuracy': 'accuracy',
+                   'f1': make_scorer(f1_score, average='weighted', zero_division=1),
+                   'recall': make_scorer(recall_score, average='weighted', zero_division=1),
+                   'precision': make_scorer(precision_score, average='weighted', zero_division=1),
+                   'sensitivity': make_scorer(recall_score, average='weighted', zero_division=1)}
+        # Evaluate model
+        scores = cross_validate(model, X, y, scoring=scoring, cv=cv, n_jobs=-1)
+
+        # report performance
+        print('Accuracy: %.3f (%.3f)' % (scores['test_accuracy'].mean(), scores['test_accuracy'].std()))
+        print('F1-score: %.3f (%.3f)' % (scores['test_f1'].mean(), scores['test_f1'].std()))
+        print('Recall: %.3f (%.3f)' % (scores['test_recall'].mean(), scores['test_recall'].std()))
+        print('Precision: %.3f (%.3f)' % (scores['test_precision'].mean(), scores['test_precision'].std()))
+        print('Sensitivity: %.3f (%.3f)' % (scores['test_sensitivity'].mean(), scores['test_sensitivity'].std()))
+
+    def data2database(self) -> BasicResponse:
         """
         Load the data from the dataset to the database.
-        """
 
-        if self.check_if_dataset_is_in_database():
-            self.logger.info("Dataset is already in the database")
+        :return: BasicResponse with the status of the process.
+        :rtype: BasicResponse
+        """
+        self.logger.info(f"Loading {self.dataset.data_name} to {self.db.db_url}")
+        if self.check_if_dataset_is_in_database().success:
+            return BasicResponse(success=True,
+                                 status_code=200,
+                                 message="Dataset is already in the database")
         else:
+            self.logger.info("Dataset isn't in the database, loading data...")
             try:
                 metadata = self.dataset.metadata.copy()
                 total_rows = len(metadata)
@@ -82,6 +148,7 @@ class BasicExperiment:
                     self.db.collection.insert_one(db_entry)
 
                     # delete the audio object
+                    time.sleep(.005)
                     del audio
 
                 # Check if the data was loaded
@@ -89,12 +156,13 @@ class BasicExperiment:
                 if response.success:
                     # Update the metadata
                     self.dataset.metadata = metadata
-                    self.logger.info(response.get_as_str(module="MainModule", action="Load data to database"))
-                else:
-                    self.logger.error(response.get_as_str(module="MainModule", action="Load data to database"))
+
+                return response
 
             except Exception as e:
-                self.logger.error(f"Error loading the {self.dataset.data_name} to {self.db.db_url}: {e}")
+                return BasicResponse(success=False,
+                                     status_code=500,
+                                     message=f"Error loading the data to the database: {e}")
 
     def check_if_dataset_is_in_database(self) -> BasicResponse:
         """
@@ -105,7 +173,8 @@ class BasicExperiment:
         """
         try:
             # Check if the dataset is in the database
-            if self.db.collection.count_documents({}) == len(self.dataset.metadata):
+            docs_on_database = self.db.collection.count_documents({})
+            if len(self.dataset.metadata) <= docs_on_database:
                 return BasicResponse(success=True, status_code=200, message="Dataset is in the database")
             else:
                 return BasicResponse(success=False, status_code=404, message="Dataset is not in the database")
@@ -137,15 +206,19 @@ class DataSet(BaseModel):
 
     data_name: Annotated[str, Field(pattern=r"^[a-zA-Z0-9-_]+$")]
     data_version: Annotated[str, Field(pattern=r"^[a-zA-Z0-9.]+$")]
+    data_extension: Annotated[str, Field(pattern=r"^[a-zA-Z0-9._-]+$")]
 
     data_path: Annotated[str, Field(pattern=r"^[a-zA-Z0-9-_./]+$")]
     csv_extra: Annotated[str, Field(pattern=r"^[a-zA-Z0-9-_./]+$")]
     csv_metadata: Annotated[str, Field(pattern=r"^[a-zA-Z0-9-_./]+$")]
 
     data_options: Optional[dict] = None
+    data_description: Optional[dict] = None
     metadata: Optional[pd.DataFrame] = None
 
-    def load_dataset(self) -> BasicResponse:
+    coding_schema: Optional[dict] = None
+
+    def load_dataset(self, standardization_method: Any = None) -> BasicResponse:
         """
         Load the dataset from the metadata.
 
@@ -164,113 +237,105 @@ class DataSet(BaseModel):
                                      message=f"Metadata file not found: {self.csv_metadata}")
 
             # Load the dataset
+            self.metadata = pd.read_csv(self.csv_metadata)
+            self.metadata = self.metadata.dropna()
+            self.metadata = self.metadata.reset_index(drop=True)
             if self.data_options.get("standardize", False):
-                # TODO: Add the code to load the dataset without standardization
-                return BasicResponse(success=False,
-                                     status_code=500,
-                                     message="Dataset without standardization are not supported yet.")
+                # Standardize the dataset
+                column_id = self.data_description.get("Id")
+                if "Id" not in self.metadata.columns:
+                    # Add an id column
+                    self.metadata["Id"] = self.metadata[column_id]
+
+                column_path = self.data_description.get("Path")
+                if "Path" not in self.metadata.columns:
+                    if os.path.exists(os.path.join(self.data_path,
+                                                   self.metadata[column_id][0])):
+                        # Lambda function to create the path
+                        self.metadata[column_path] = self.metadata[column_id].apply(
+                            lambda x: os.path.join(self.data_path, x))
+                    else:
+                        # Lambda function to create the path
+                        self.metadata[column_path] = self.metadata[column_id].apply(
+                            lambda x: os.path.join(self.data_path, x + self.data_extension))
+
+                # Standardize the dataset
+                self.metadata, self.coding_schema = standardization_method(self.metadata)
+
+                return BasicResponse(success=True,
+                                     status_code=200,
+                                     message="Dataset standardization completed")
             else:
-                # Load the dataset
-                self.metadata = pd.read_csv(self.csv_metadata)
-                self.metadata = self.metadata.dropna()
-                self.metadata = self.metadata.reset_index(drop=True)
                 return BasicResponse(success=True, status_code=200, message="Loaded dataset from metadata")
 
         except Exception as e:
             return BasicResponse(success=False, status_code=500, message=f"Error loading the dataset: {e}")
 
-    # def load_data(self, path_to_data: str,
-    #               files_format: str = "wav",
-    #               data_name: str = "metadata",
-    #               data_type: DataTypes = DataTypes.AUDIO) -> BasicResponse:
-    #     """
-    #     Load the audios from the dataset.
-    #
-    #     :param path_to_data: Path to the audios.
-    #     :type path_to_data: str
-    #     :param files_format: Audio format.
-    #     :type files_format: str
-    #     :param data_name: Name of the data.
-    #     :type data_name: str
-    #     :param data_type: Data type of the files (txt, json, audio, video, other).
-    #     :type data_type: int
-    #     :return: BasicResponse object.
-    #     :rtype: BasicResponse
-    #     """
-    #     path = os.path.join(self.root_path, path_to_data)
-    #     if os.path.isfile(path):
-    #         try:
-    #             # Load the data
-    #             data = []
-    #             if data_type == DataTypes.AUDIO:
-    #                 data = [AudioStream.from_file_path(file_path=path)]
-    #             elif data_type == DataTypes.VIDEO:
-    #                 data = [VideoStream.from_file_path(file_path=path)]
-    #             elif data_type == DataTypes.TEXT:
-    #                 data = [TextStream.from_file_path(file_path=path)]
-    #
-    #             # Check if the data was loaded
-    #             if not data:
-    #                 return BasicResponse(success=False, status_code=500, message=f"Error loading the audios")
-    #             else:
-    #                 setattr(self, data_name, data)
-    #
-    #             return BasicResponse(success=True, status_code=200, message=f"Loaded {len(data)} {data_name}")
-    #         except Exception as e:
-    #             return BasicResponse(success=False, status_code=500, message=f"Error loading the {data_name}: {e}")
-    #
-    #     elif os.path.isdir(path):
-    #         files_response = self.get_files(path_to_files=path,
-    #                                         files_format=files_format)
-    #         if not files_response.success:
-    #             return files_response
-    #         else:
-    #             data = []
-    #             try:
-    #                 # Load the data
-    #                 if data_type == DataTypes.AUDIO:
-    #                     data = [AudioStream.from_file_path(file_path=file) for file in files_response.data]
-    #                 elif data_type == DataTypes.VIDEO:
-    #                     data = [VideoStream.from_file_path(file_path=file) for file in files_response.data]
-    #                 elif data_type == DataTypes.TEXT:
-    #                     data = [TextStream.from_file_path(file_path=file) for file in files_response.data]
-    #
-    #                 # Check if the data was loaded
-    #                 if not data:
-    #                     return BasicResponse(success=False, status_code=500, message=f"Error loading the audios")
-    #                 else:
-    #                     setattr(self, data_name, data)
-    #
-    #                 return BasicResponse(success=True, status_code=200, message=f"Loaded {len(data)} {data_name}")
-    #             except Exception as e:
-    #                 error_message = f"Error loading the {data_name}-{files_response.data[len(data) + 1]}: {e}"
-    #                 return BasicResponse(success=False, status_code=500, message=error_message)
-    #
-    # @staticmethod
-    # def get_files(path_to_files: str, files_format: str = "txt") -> BasicResponse:
-    #     """
-    #     Get the list of files from a path.
-    #
-    #     :param path_to_files: Path to the files.
-    #     :type path_to_files: str
-    #     :param files_format: Files format.
-    #     :type files_format: str
-    #     :return: List of files.
-    #     :rtype: list
-    #     """
-    #     # Check if the path exists
-    #     if not os.path.exists(path_to_files):
-    #         return BasicResponse(success=False, status_code=404, message=f"Path not found: {path_to_files}")
-    #
-    #     # Get the list of files
-    #     files = os.listdir(path_to_files)
-    #     files = [os.path.join(path_to_files, file) for file in files if file.endswith(files_format)]
-    #
-    #     # Check if there are files
-    #     if not files:
-    #         return BasicResponse(success=False, status_code=404, message=f"No files found in: {path_to_files}")
-    #
-    #     return ListResponse(success=True, status_code=200, message=f"Loaded {len(files)} files", data=files)
+    def create_kfold_subsets(self, n_splits: int = 4, random_state: int = 42) -> pd.DataFrame:
+        """
+        Create k-fold subsets for the dataset.
+
+        :param n_splits: Number of splits for the k-fold cross-validation.
+        :type n_splits: int
+        :param random_state: Random state for the k-fold cross-validation.
+        :type random_state: int
+        :return: DataFrame with the k-fold subsets.
+        :rtype: pd.DataFrame
+        """
+        # Extract features and target variable
+        df_final = self.metadata.copy()
+        train_indices = df_final[df_final['DataSet'] == 'train']
+        dev_indices = df_final[df_final['DataSet'] == 'dev']
+
+        # Initialize KFold
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+        # Create a list to store the folds
+        folds = []
+
+        # Iterate over the folds
+        for train_fold, dev_fold in kf.split(train_indices):
+            fold_dict = {
+                "train": train_indices[train_fold].tolist(),
+            }
+            folds.append(fold_dict)
+        return df_final
+
+
+def standardization_method_odyssey(df_metadata: pd.DataFrame) -> [pd.DataFrame, dict]:
+    # Define the emotions
+    emotions = ["Angry", "Sad", "Happy", "Surprise", "Fear", "Disgust", "Contempt", "Neutral"]
+    emotion_codes = ["A", "S", "H", "U", "F", "D", "C", "N"]
+
+    # Create a dictionary for one-hot encoding
+    one_hot_dict = {e: [1.0 if e == ec else 0.0 for ec in emotion_codes] for e in emotion_codes}
+
+    # Filter out rows with undefined EmoClass
+    df_metadata = df_metadata[df_metadata['EmoClass'].isin(emotion_codes)]
+
+    # Apply one-hot encoding and create 'Label' column
+    for i, e in enumerate(emotion_codes):
+        # df_metadata[emotions[i]] = df_metadata['EmoClass'].apply(lambda x: one_hot_dict[x][i])
+        df_metadata.loc[df_metadata['EmoClass'] == e, emotions] = one_hot_dict[e]
+
+    # Select relevant columns for the new DataFrame
+    df_final = df_metadata[['FileName', 'Split_Set', 'FilePath'] + emotions]
+    df_final = df_final.rename(columns={'FileName': 'Id'})
+    df_final = df_final.rename(columns={'Split_Set': 'DataSet'})
+
+    # Remove the extension from the file name
+    df_final['Id'] = df_final['Id'].apply(lambda x: x.split(".")[0])
+
+    # Remplace the "Train" and "Development" strings with "train" and "dev"
+    df_final['DataSet'] = df_final['DataSet'].apply(lambda x: "train" if x == "Train" else "dev")
+
+    # Create 'Label' column with one-hot encoded vectors as lists
+    df_final['Label'] = df_final[emotions].values.tolist()
+
+    # Drop individual emotion columns
+    df_final.drop(emotions, axis=1, inplace=True)
+
+    return df_final[['Id', 'DataSet', 'Label', 'FilePath']], one_hot_dict
 
 
 if __name__ == "__main__":
@@ -284,7 +349,6 @@ if __name__ == "__main__":
 
     # Create the experiment
     experiment = BasicExperiment(config_path=args.config)
-    experiment.data2database()
 
     # df_analyzer = DataFrameAnalyzer()
     # df_analyzer.generate_summary_report(df=labels_consensus_processed)
