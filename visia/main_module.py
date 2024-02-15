@@ -63,20 +63,21 @@ class BasicExperiment:
         else:
             self.logger.error(dset_response.get_as_str(module="MainModule", action="Load dataset"))
 
-        # Set the database
-        self.db = BasicDataBase(**self.exp_config.db_config)
-        db_response = self.db.check_connection()
-        if db_response.success:
-            self.logger.info(db_response.get_as_str(module="MainModule", action="Check connection"))
-        else:
-            self.logger.error(db_response.get_as_str(module="MainModule", action="Check connection"))
+        if self.exp_config.db_config.get("dset2db", False):
+            # Set the database
+            self.db = BasicDataBase(**self.exp_config.db_config)
+            db_response = self.db.check_connection()
+            if db_response.success:
+                self.logger.info(db_response.get_as_str(module="MainModule", action="Check connection"))
+            else:
+                self.logger.error(db_response.get_as_str(module="MainModule", action="Check connection"))
 
-        # Load the data to the database
-        db_response = self.data2database()
-        if db_response.success:
-            self.logger.info(db_response.get_as_str(module="MainModule", action="Load data to database"))
-        else:
-            self.logger.error(db_response.get_as_str(module="MainModule", action="Load data to database"))
+            # Load the data to the database
+            db_response = self.data2database()
+            if db_response.success:
+                self.logger.info(db_response.get_as_str(module="MainModule", action="Load data to database"))
+            else:
+                self.logger.error(db_response.get_as_str(module="MainModule", action="Load data to database"))
 
         # Prepare the cross-validation procedure
         cv = KFold(n_splits=2, random_state=42, shuffle=True)

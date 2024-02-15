@@ -27,7 +27,10 @@
     "db_host": "localhost",
     "db_port": 27017,
     "db_uri": "mongodb://localhost:27017/",
-    "db_timeout": 3000},
+    "db_timeout": 3000,
+    "dset2db": false
+  },
+
 
   "data_config": {
     "data_name": "Odyssey2024",
@@ -35,7 +38,7 @@
     "data_extension": "wav",
     "csv_metadata": "/home/jose_m/PycharmProjects/visia-science/data/Odyssey/labels_consensus.csv",
     "csv_extra": "/home/jose_m/PycharmProjects/visia-science/data/Odyssey/labels_detailed.csv",
-    "data_path": "/media/jose_m/Box1/Odyssey/Audios/Audios",
+    "data_path": "/media/jose_m/Box1/Odyssey/Audios/",
     "data_options": {
       "standardize": true
     },
