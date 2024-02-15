@@ -1,0 +1,52 @@
+{
+  "root_path": "C:\\Users\\jmram\\OneDrive\\Documents\\GitHub\\visia-science",
+
+  "log_config": {
+    "log_folder": "C:\\Users\\jmram\\OneDrive\\Documents\\GitHub\\visia-science\\logs",
+    "log_name": "Visia-Scince_Logger",
+    "log_file_path": "app.log",
+    "error_log_file_path": "error.log",
+    "max_log_size": 5242880,
+    "backup_count": 3,
+    "log_level": "logging.DEBUG"
+  },
+
+  "mlflow_config": {
+    "mlflow_tracking_uri": "http://localhost:5000",
+    "mlflow_experiment_name": "Odyssey2024",
+    "mlflow_run_name": "Odyssey2024"
+  },
+
+  "db_config": {
+    "db_type":  "mongodb",
+    "db_engine": "pymongo",
+    "db_name": "Odyssey_2024",
+    "db_main_collection": "data",
+    "db_user": "root",
+    "db_password": "secret9312",
+    "db_host": "localhost",
+    "db_port": 27017,
+    "db_uri": "mongodb://localhost:27017/",
+    "db_timeout": 3000,
+    "dset2db": false
+  },
+
+
+  "data_config": {
+    "data_name": "Odyssey2024",
+    "data_version": "1.0",
+    "data_extension": "wav",
+    "csv_metadata": "/home/jose_m/PycharmProjects/visia-science/data/Odyssey/labels_consensus.csv",
+    "csv_extra": "/home/jose_m/PycharmProjects/visia-science/data/Odyssey/labels_detailed.csv",
+    "data_path": "/media/jose_m/Box1/Odyssey/Audios/",
+    "data_options": {
+      "standardize": true
+    },
+    "data_description": {
+      "Id": "FileName",
+      "Path": "FilePath",
+      "Label": "EmoClass",
+      "SplitSet": "SplitSet"
+    }
+  }
+}
