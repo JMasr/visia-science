@@ -20,12 +20,12 @@ from sklearn.metrics import make_scorer, f1_score, recall_score, precision_score
 from sklearn.model_selection import KFold, cross_validate
 from tqdm import tqdm
 
-from visia.config.visia_config import BasicConfig
-from visia.database import BasicDataBase
-from visia.dataset.dataset import AudioStream
-from visia.files import read_audio
-from visia.logger import BasicLogger
-from visia.responses.basic_responses import BasicResponse, DataResponse
+from config.visia_config import BasicConfig
+from database import BasicDataBase
+from dataset.dataset import AudioStream
+from files import read_audio
+from logger import BasicLogger
+from responses.basic_responses import BasicResponse, DataResponse
 
 
 class BasicExperiment:
