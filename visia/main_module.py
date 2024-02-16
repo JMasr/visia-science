@@ -100,7 +100,7 @@ class BasicExperiment:
         train_response = self.train_loop(cv=cv,
                                          model=model,
                                          scoring=scoring,
-                                         df_to_train=df_train,
+                                         df_train=df_train,
                                          results_path=results_path)
         if train_response.success:
             self.logger.info(train_response.get_as_str(module="MainModule", action="Train model"))
