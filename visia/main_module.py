@@ -290,9 +290,9 @@ class DataSet(BaseModel):
     data_version: Annotated[str, Field(pattern=r"^[a-zA-Z0-9.]+$")]
     data_extension: Annotated[str, Field(pattern=r"^[a-zA-Z0-9._-]+$")]
 
-    data_path: Annotated[str, Field(pattern=r"^[a-zA-Z0-9-_./]+$")]
-    csv_extra: Annotated[str, Field(pattern=r"^[a-zA-Z0-9-_./]+$")]
-    csv_metadata: Annotated[str, Field(pattern=r"^[a-zA-Z0-9-_./]+$")]
+    data_path: Annotated[str, Field(pattern=r"^[a-zA-Z0-9-_./~]+$")]
+    csv_extra: Annotated[str, Field(pattern=r"^[a-zA-Z0-9-_./~]+$")]
+    csv_metadata: Annotated[str, Field(pattern=r"^[a-zA-Z0-9-_./~]+$")]
 
     data_options: Optional[dict] = None
     data_description: Optional[dict] = None
