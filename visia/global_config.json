@@ -48,5 +48,12 @@
       "Label": "EmoClass",
       "SplitSet": "SplitSet"
     }
+  },
+
+  "train_config": {
+    "experiment_name": "Odyssey2024",
+    "experiment_folder": "/home/gts/projects/jmramirez/odyssey_2024/odyssey_2024_dataset/Experiments/",
+    "model_name": "RandomForest",
+    "feats": "MFCC"
   }
 }
