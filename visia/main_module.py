@@ -89,13 +89,19 @@ class BasicExperiment:
                    'recall': make_scorer(recall_score, average='weighted', zero_division=1),
                    'precision': make_scorer(precision_score, average='weighted', zero_division=1),
                    'sensitivity': make_scorer(recall_score, average='weighted', zero_division=1)}
-        # Train the model
+        # Prepare the data
         df_train = self.dataset.metadata.copy()
+
+        # Train the model
+        self.train_config = self.exp_config.train_config
+        results_path = self.train_config.get("experiment_folder", os.path.join(self.exp_config.root_path, "exp"))
+
         self.logger.info("Training model...")
         train_response = self.train_loop(cv=cv,
                                          model=model,
                                          scoring=scoring,
-                                         df_to_train=df_train)
+                                         df_to_train=df_train,
+                                         results_path=results_path)
         if train_response.success:
             self.logger.info(train_response.get_as_str(module="MainModule", action="Train model"))
             # report performance
@@ -176,37 +182,57 @@ class BasicExperiment:
             return BasicResponse(success=False, status_code=500,
                                  message=f"Error checking if the dataset is in the database: {e}")
 
-    @staticmethod
-    def train_loop(df_to_train: pd.DataFrame, model: Any, cv: Any, scoring: dict) -> BasicResponse:
+    def train_loop(self,
+                   df_train: pd.DataFrame,
+                   model: Any,
+                   cv: Any,
+                   scoring: dict,
+                   results_path: str) -> BasicResponse:
         """
         Train the model with the dataset.
         """
         try:
-            # Copy the dataframe
-            df_train = df_to_train.copy()
+            # Create the results folder
+            if not os.path.exists(results_path):
+                os.makedirs(results_path)
+            x_path = os.path.join(results_path, "x_odyssey.npy")
+            y_path = os.path.join(results_path, "y_odyssey.npy")
 
+            # Prepare the data
             x = np.array([])
             y = np.array([])
-            # Iterate over the rows
-            for i, r in tqdm(df_train.iterrows(), total=len(df_train), desc="Processing data"):
-                # Load the audio
-                path_to_audio = r["FilePath"]
-                s, sr = read_audio(path_to_audio)
-                mfcc = librosa.feature.mfcc(y=s, sr=sr)
-                mfcc = mfcc.T
+            if os.path.exists(x_path) and os.path.exists(y_path):
+                self.logger.info("Loading data from file")
+                # Load the data
+                x = np.load(x_path)
+                y = np.load(y_path)
+            else:
+                self.logger.info("Processing data")
+                # Iterate over the rows
+                for i, r in tqdm(df_train.iterrows(), total=len(df_train), desc="Processing data"):
+                    # Load the audio
+                    path_to_audio = r["FilePath"]
+                    s, sr = read_audio(path_to_audio)
+                    mfcc = librosa.feature.mfcc(y=s, sr=sr)
+                    mfcc = mfcc.T
 
-                # Create an array size of the mfcc
-                label = np.array([r["Label"] for _ in range(mfcc.shape[0])])
+                    # Create an array size of the mfcc
+                    label = np.array([r["Label"] for _ in range(mfcc.shape[0])])
 
-                # Add the mfcc and the label to the X and y arrays
-                if x.size == 0:
-                    x = mfcc
-                    y = label
-                else:
-                    x = np.vstack((x, mfcc))
-                    y = np.vstack((y, label))
+                    # Add the mfcc and the label to the X and y arrays
+                    if x.size == 0:
+                        x = mfcc
+                        y = label
+                    else:
+                        x = np.vstack((x, mfcc))
+                        y = np.vstack((y, label))
+                self.logger.info("Saving data to file")
+                # Save the data
+                np.save(x_path, x)
+                np.save(y_path, y)
 
             # Evaluate model
+            self.logger.info("Evaluating model")
             scores = cross_validate(model, x, y, scoring=scoring, cv=cv, n_jobs=-1, verbose=1)
 
             return DataResponse(success=True,
