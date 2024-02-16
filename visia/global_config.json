@@ -1,8 +1,8 @@
 {
-  "root_path": "C:\\Users\\jmram\\OneDrive\\Documents\\GitHub\\visia-science",
+  "root_path": "/home/gts/projects/jmramirez/odyssey_2024/visia-science",
 
   "log_config": {
-    "log_folder": "C:\\Users\\jmram\\OneDrive\\Documents\\GitHub\\visia-science\\logs",
+    "log_folder": "/home/gts/projects/jmramirez/odyssey_2024/visia-science/logs",
     "log_name": "Visia-Scince_Logger",
     "log_file_path": "app.log",
     "error_log_file_path": "error.log",
@@ -36,9 +36,9 @@
     "data_name": "Odyssey2024",
     "data_version": "1.0",
     "data_extension": "wav",
-    "csv_metadata": "/home/jose_m/PycharmProjects/visia-science/data/Odyssey/labels_consensus.csv",
-    "csv_extra": "/home/jose_m/PycharmProjects/visia-science/data/Odyssey/labels_detailed.csv",
-    "data_path": "/media/jose_m/Box1/Odyssey/Audios/",
+    "csv_metadata": "/home/gts/projects/jmramirez/odyssey_2024/odyssey_2024_dataset/Labels/labels_consensus.csv",
+    "csv_extra": "/home/gts/projects/jmramirez/odyssey_2024/odyssey_2024_dataset/Labels/labels_detailed.csv",
+    "data_path": "/home/gts/projects/jmramirez/odyssey_2024/odyssey_2024_dataset/Audios/",
     "data_options": {
       "standardize": true
     },

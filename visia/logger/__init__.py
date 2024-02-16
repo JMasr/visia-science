@@ -34,7 +34,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
-from visia.responses.basic_responses import BasicResponse
+from responses.basic_responses import BasicResponse
 
 
 class BasicLogger:

@@ -13,7 +13,7 @@ import textgrids
 from pydantic import BaseModel, FilePath, Field, ConfigDict
 from sklearn.preprocessing import LabelEncoder
 
-from visia.files import identify_file_type, get_file_format, read_audio
+from files import identify_file_type, get_file_format, read_audio
 
 
 class DataTypes(Enum):

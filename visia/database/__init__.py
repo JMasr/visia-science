@@ -1,7 +1,7 @@
 from pymongo import MongoClient, errors
 from pymongo.database import Database
 
-from visia.responses.basic_responses import BasicResponse
+from responses.basic_responses import BasicResponse
 
 
 class BasicDataBase:
