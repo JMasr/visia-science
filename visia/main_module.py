@@ -8,16 +8,22 @@ This is a module for running the Visia-Science main Pipeline.
 import argparse
 import os
 import time
-from typing import Annotated, Optional, Any
+import importlib
+from typing import Annotated, Optional, Any, Tuple
 
 import librosa.feature
 import numpy as np
 import pandas as pd
 from mlflow import MlflowClient
+from numpy import ndarray, dtype
 from pydantic import BaseModel, Field, ConfigDict
+from sklearn import impute, preprocessing
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import make_scorer, f1_score, recall_score, precision_score
-from sklearn.model_selection import KFold, cross_validate
+from sklearn.model_selection import KFold, cross_validate, cross_val_score
+from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
 from config.visia_config import BasicConfig
@@ -43,11 +49,11 @@ class BasicExperiment:
         """
         self.exp_config = BasicConfig(path_to_config=config_path)
 
-        # Set the logger
+        # CONFIGURE THE LOGGER
         self.logger = BasicLogger(**self.exp_config.log_config).get_logger()
         self.logger.info(f"Logger created - 200 - Parameters: {self.exp_config.model_dump()}\n")
 
-        # Set the MLFlow server
+        # CONFIGURE THE MLFLOW SERVER
         self.mlflow_server = MLFlowServer(mlflow_config=self.exp_config.mlflow_config)
         mlflow_response = self.mlflow_server.is_up()
         if mlflow_response.success:
@@ -55,7 +61,7 @@ class BasicExperiment:
         else:
             self.logger.error(mlflow_response.get_as_str(module="MainModule", action="Check MLFlow server"))
 
-        # Set the dataset
+        # SET THE DATASET
         self.dataset = DataSet(**self.exp_config.data_config)
         dset_response = self.dataset.load_dataset(standardization_method_odyssey)
         if dset_response.success:
@@ -63,6 +69,7 @@ class BasicExperiment:
         else:
             self.logger.error(dset_response.get_as_str(module="MainModule", action="Load dataset"))
 
+        # CONFIGURE THE DATABASE
         if self.exp_config.db_config.get("dset2db", False):
             # Set the database
             self.db = BasicDataBase(**self.exp_config.db_config)
@@ -79,39 +86,10 @@ class BasicExperiment:
             else:
                 self.logger.error(db_response.get_as_str(module="MainModule", action="Load data to database"))
 
-        # Prepare the cross-validation procedure
-        cv = KFold(n_splits=2, random_state=42, shuffle=True)
-        # Create model
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-        # Set the scoring
-        scoring = {'accuracy': 'accuracy',
-                   'f1': make_scorer(f1_score, average='weighted', zero_division=1),
-                   'recall': make_scorer(recall_score, average='weighted', zero_division=1),
-                   'precision': make_scorer(precision_score, average='weighted', zero_division=1),
-                   'sensitivity': make_scorer(recall_score, average='weighted', zero_division=1)}
-        # Prepare the data
-        df_train = self.dataset.metadata.copy()
-
-        # Train the model
-        self.train_config = self.exp_config.train_config
-        results_path = self.train_config.get("experiment_folder", os.path.join(self.exp_config.root_path, "exp"))
-
-        self.logger.info("Training model...")
-        train_response = self.train_loop(cv=cv,
-                                         model=model,
-                                         scoring=scoring,
-                                         df_train=df_train,
-                                         results_path=results_path)
+        # TRAIN THE MODEL
+        train_response = self.train_loop()
         if train_response.success:
             self.logger.info(train_response.get_as_str(module="MainModule", action="Train model"))
-            # report performance
-            scores = train_response.data.get("scoring")
-            print('Accuracy: %.3f (%.3f)' % (scores['test_accuracy'].mean(), scores['test_accuracy'].std()))
-            print('F1-score: %.3f (%.3f)' % (scores['test_f1'].mean(), scores['test_f1'].std()))
-            print('Recall: %.3f (%.3f)' % (scores['test_recall'].mean(), scores['test_recall'].std()))
-            print('Precision: %.3f (%.3f)' % (scores['test_precision'].mean(), scores['test_precision'].std()))
-            print('Sensitivity: %.3f (%.3f)' % (scores['test_sensitivity'].mean(), scores['test_sensitivity'].std()))
-
         else:
             self.logger.error(train_response.get_as_str(module="MainModule", action="Train model"))
 
@@ -182,68 +160,71 @@ class BasicExperiment:
             return BasicResponse(success=False, status_code=500,
                                  message=f"Error checking if the dataset is in the database: {e}")
 
-    def train_loop(self,
-                   df_train: pd.DataFrame,
-                   model: Any,
-                   cv: Any,
-                   scoring: dict,
-                   results_path: str) -> BasicResponse:
-        """
-        Train the model with the dataset.
-        """
-        try:
-            # Create the results folder
-            if not os.path.exists(results_path):
-                os.makedirs(results_path)
-            x_path = os.path.join(results_path, "x_odyssey.npy")
-            y_path = os.path.join(results_path, "y_odyssey.npy")
+    def train_loop(self) -> BasicResponse:
+        # GET THE SUBSETS
+        train_config = self.exp_config.train_config
+        results_path = train_config.get("experiment_folder", os.path.join(self.exp_config.root_path, "results"))
+        if not os.path.exists(results_path):
+            os.makedirs(results_path)
 
-            # Prepare the data
-            x = np.array([])
-            y = np.array([])
-            if os.path.exists(x_path) and os.path.exists(y_path):
+        x_train_path = os.path.join(results_path, f"x_train_{train_config.get('experiment_name', 'exp')}.npy")
+        x_dev_path = os.path.join(results_path, f"x_dev_{train_config.get('experiment_name', 'exp')}.npy")
+        y_train_path = os.path.join(results_path, f"y_train_{train_config.get('experiment_name', 'exp')}.npy")
+        y_dev_path = os.path.join(results_path, f"y_dev_{train_config.get('experiment_name', 'exp')}.npy")
+
+        try:
+            if (os.path.exists(x_train_path)
+                    and os.path.exists(x_dev_path)
+                    and os.path.exists(y_train_path)
+                    and os.path.exists(y_dev_path)):
+
                 self.logger.info("Loading data from file")
                 # Load the data
-                x = np.load(x_path)
-                y = np.load(y_path)
+                x_train = np.load(x_train_path)
+                x_dev = np.load(x_dev_path)
+                y_train = np.load(y_train_path)
+                y_dev = np.load(y_dev_path)
             else:
                 self.logger.info("Processing data")
-                # Iterate over the rows
-                for i, r in tqdm(df_train.iterrows(), total=len(df_train), desc="Processing data"):
-                    # Load the audio
-                    path_to_audio = r["FilePath"]
-                    s, sr = read_audio(path_to_audio)
-                    mfcc = librosa.feature.mfcc(y=s, sr=sr)
-                    mfcc = mfcc.T
-
-                    # Create an array size of the mfcc
-                    label = np.array([r["Label"] for _ in range(mfcc.shape[0])])
-
-                    # Add the mfcc and the label to the X and y arrays
-                    if x.size == 0:
-                        x = mfcc
-                        y = label
-                    else:
-                        x = np.vstack((x, mfcc))
-                        y = np.vstack((y, label))
-                self.logger.info("Saving data to file")
+                x_train, y_train, x_dev, y_dev = self.dataset.get_subsets()
                 # Save the data
-                np.save(x_path, x)
-                np.save(y_path, y)
-
-            # Evaluate model
-            self.logger.info("Evaluating model")
-            scores = cross_validate(model, x, y, scoring=scoring, cv=cv, n_jobs=-1, verbose=1)
-
-            return DataResponse(success=True,
-                                status_code=200,
-                                message="Model trained successfully",
-                                data={"model": model,
-                                      "scoring": scores})
+                np.save(x_train_path, x_train)
+                np.save(x_dev_path, x_dev)
+                np.save(y_train_path, y_train)
+                np.save(y_dev_path, y_dev)
+            self.logger.info("Data ready for training!")
         except Exception as e:
-            return BasicResponse(success=False,
-                                 status_code=500,
-                                 message=f"Error training the model: {e}")
+            return BasicResponse(success=False, status_code=500, message=f"Error processing the data: {e}")
+
+        # CONFIGURE THE MODEL AND TRAIN
+        model_params = train_config.get("models", None)
+        if model_params is None:
+            return BasicResponse(success=False, status_code=404, message="No model parameters found")
+
+        try:
+            for model in model_params:
+                self.logger.info(f"Training model: {model.get('model_name')}")
+
+                factory = ModelFactory(**model)
+                model_instance = factory.create_model_instance()
+                pipeline = factory.create_pipeline(model_instance)
+                pipeline_trained = factory.fit_pipeline(pipeline, x_train, y_train)
+                scores = factory.perform_cross_validation(pipeline_trained, x_dev, y_dev)
+                scores_message = (f"\tAccuracy: {scores['test_accuracy'].mean()} ({scores['test_accuracy'].std()})\n"
+                                  f"\tF1-score: {scores['test_f1'].mean()} ({scores['test_f1'].std()})\n"
+                                  f"\tRecall: {scores['test_recall'].mean()} ({scores['test_recall'].std()})\n"
+                                  f"\tPrecision: {scores['test_precision'].mean()} ({scores['test_precision'].std()})\n"
+                                  f"\tSensitivity: {scores['test_sensitivity'].mean()} ({scores['test_sensitivity'].std()})")
+                self.logger.info(f"Model trained: {model.get('model_name')}")
+                self.logger.info(f"*** Scores ***\n{scores_message}")
+
+                return DataResponse(success=True,
+                                    status_code=200,
+                                    message="Model Trained",
+                                    data=dict(scores=scores, model=pipeline_trained))
+
+        except Exception as e:
+            return BasicResponse(success=False, status_code=500, message=f"Error training the model: {e}")
 
 
 class MLFlowServer:
@@ -378,6 +359,104 @@ class DataSet(BaseModel):
 
         except Exception as e:
             return BasicResponse(success=False, status_code=500, message=f"Error loading the dataset: {e}")
+
+    def get_subsets(self):
+        x_train, y_train = make_subset_4_dataframe(self.metadata.sample(frac=0.001), "train")
+        x_dev, y_dev = make_subset_4_dataframe(self.metadata.sample(frac=0.001), "dev")
+
+        return x_train, y_train, x_dev, y_dev
+
+
+def make_subset_4_dataframe(df: pd.DataFrame, subset: str) -> tuple[ndarray, ndarray]:
+    """
+    Make a subset of the DataFrame with the specified subset.
+    """
+    # Create a copy of the DataFrame
+    df_ = df.copy()
+    df_subset = df_[df_["DataSet"] == subset]
+    # Iterate over the rows
+    x_subset = np.array([])
+    y_subset = np.array([])
+    for index, row in tqdm(df_subset.iterrows(), total=len(df_subset), desc="Processing data"):
+        # Load the audio
+        path_to_audio = row["FilePath"]
+        s, sr = read_audio(path_to_audio)
+        mfcc = librosa.feature.mfcc(y=s, sr=sr)
+        mfcc = mfcc.T
+
+        # Create an array size of the mfcc
+        label = np.array([row["Label"] for _ in range(mfcc.shape[0])])
+
+        # Add the mfcc and the label to the X and y arrays
+        if x_subset.size == 0:
+            x_subset = mfcc
+            y_subset = label
+        else:
+            x_subset = np.vstack((x_subset, mfcc))
+            y_subset = np.vstack((y_subset, label))
+
+    return x_subset, y_subset
+
+
+class ModelFactory:
+    """
+    Class to create a model instance and a pipeline with the specified preprocessors.
+    """
+
+    def __init__(self,
+                 model_name: str,
+                 model_params,
+                 k_folds: int = 5,
+                 random_state: int = 42,
+                 preprocessors: list = None,
+                 scoring: dict = None):
+        """
+        Initialize the class with the specified configuration.
+        """
+        self.model_name: str = model_name
+        self.model_params: dict = model_params
+        self.random_state: int = random_state
+        self.cross_val_folds = KFold(n_splits=k_folds, random_state=self.random_state, shuffle=True)
+
+        if preprocessors is None:
+            self.preprocessors = [impute.SimpleImputer(), StandardScaler()]
+        else:
+            self.preprocessors = preprocessors
+
+        if scoring is None:
+            self.scoring = {'accuracy': 'accuracy',
+                            'f1': make_scorer(f1_score, average='weighted', zero_division=1),
+                            'recall': make_scorer(recall_score, average='weighted', zero_division=1),
+                            'precision': make_scorer(precision_score, average='weighted', zero_division=1),
+                            'sensitivity': make_scorer(recall_score, average='weighted', zero_division=1)}
+        else:
+            self.scoring = scoring
+
+    def create_model_instance(self):
+
+        if self.model_name == "LogisticRegression":
+            model_instance = LogisticRegression(**self.model_params)
+        elif self.model_name == "RandomForestClassifier":
+            model_instance = RandomForestClassifier(**self.model_params)
+        else:
+            model_instance = None
+
+        return model_instance
+
+    def create_pipeline(self, model_instance):
+        steps = [('preprocessor_{}'.format(idx), preprocessor) for idx, preprocessor in enumerate(self.preprocessors)]
+        steps.append(('model', model_instance))
+        pipeline = Pipeline(steps)
+        return pipeline
+
+    def perform_cross_validation(self, pipeline, X, y):
+        scores = cross_validate(pipeline, X, y, cv=self.cross_val_folds, scoring=self.scoring, n_jobs=-1, verbose=1)
+        return scores
+
+    @staticmethod
+    def fit_pipeline(pipeline, X, y):
+        pipeline.fit(X, y)
+        return pipeline
 
 
 def standardization_method_odyssey(df_metadata: pd.DataFrame) -> [pd.DataFrame, dict]:
