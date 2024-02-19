@@ -412,9 +412,9 @@ class DataSet(BaseModel):
             self.metadata = self.metadata.reset_index(drop=True)
 
             # Sampling the dataset
-            if self.data_options.get("fraction", False):
+            fraction = self.data_options.get("fraction", 0.001)
+            if fraction != 0:
                 # Sample a fraction of the dataset
-                fraction = self.data_options.get("fraction", 0.001)
                 sample_response = self.sample_fraction(fraction)
                 if not sample_response.success:
                     return BasicResponse(success=False,
