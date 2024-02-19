@@ -40,7 +40,8 @@
     "csv_extra": "/home/gts/projects/jmramirez/odyssey_2024/odyssey_2024_dataset/Labels/labels_detailed.csv",
     "data_path": "/home/gts/projects/jmramirez/odyssey_2024/odyssey_2024_dataset/Audios/",
     "data_options": {
-      "standardize": true
+      "standardize": true,
+      "fraction": 0
     },
     "data_description": {
       "Id": "FileName",
