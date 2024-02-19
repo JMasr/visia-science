@@ -16,10 +16,12 @@ class BasicConfig:
     def __init__(self, path_to_config: str):
         self.path_to_config: str = path_to_config
 
+        self.root_path = None
         self.db_config = None
         self.log_config = None
         self.mlflow_config = None
         self.data_config = None
+        self.train_config = None
         self.load_config()
 
     def load_config(self):
