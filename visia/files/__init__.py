@@ -1,8 +1,11 @@
 import mimetypes
 import os
+import pickle
 
 import librosa
 import numpy as np
+
+from visia.responses.basic_responses import BasicResponse
 
 
 def identify_file_type(file_path: str) -> str:
@@ -33,6 +36,7 @@ def get_file_format(file_path: str) -> str:
     _, file_extension = os.path.splitext(file_path)
     return file_extension.lower()
 
+
 def read_audio(audio_path: str) -> [np.ndarray, int]:
     """
     The code above implements SAD using the ´librosa.effects.split()´ function with a threshold of top_db=30, which
@@ -58,3 +62,39 @@ def read_audio(audio_path: str) -> [np.ndarray, int]:
     s /= np.max(np.abs(s))
 
     return s, sr
+
+
+def save_file(file_path: str, data: bytes):
+    """
+    Save a file to disk as a pickle file.
+
+    :param file_path: Path to the file.
+    :type file_path: str
+    :param data: File data.
+    :type data: bytes
+    """
+    try:
+        with open(file_path, "wb") as file:
+            pickle.dump(data, file)
+        return BasicResponse(success=True, status_code=200, message="File saved successfully.")
+    except Exception as e:
+        print(f"Error saving file: {e}")
+        return BasicResponse(success=False, status_code=500, message=f"Error saving file: {e}.")
+
+
+def load_file(file_path: str) -> [bytes, BasicResponse]:
+    """
+    Load a file from disk.
+
+    :param file_path: Path to the file.
+    :type file_path: str
+    :return: File data or a response with the error message.
+    :rtype: bytes or BasicResponse
+    """
+    try:
+        with open(file_path, "rb") as file:
+            data = pickle.load(file)
+        return data
+    except Exception as e:
+        print(f"Error loading file: {e}")
+        return BasicResponse(success=False, status_code=500, message=f"Error loading file: {e}.")
