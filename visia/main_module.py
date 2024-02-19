@@ -418,6 +418,18 @@ class DataSet(BaseModel):
             self.metadata = pd.read_csv(self.csv_metadata)
             self.metadata = self.metadata.dropna()
             self.metadata = self.metadata.reset_index(drop=True)
+
+            # Sampling the dataset
+            if self.data_options.get("fraction", False):
+                # Sample a fraction of the dataset
+                fraction = self.data_options.get("fraction", 0.001)
+                sample_response = self.sample_fraction(fraction)
+                if not sample_response.success:
+                    return BasicResponse(success=False,
+                                         status_code=500,
+                                         message="Error sampling the dataset")
+
+            # Standardize the dataset
             if self.data_options.get("standardize", False):
                 # Standardize the dataset
                 column_id = self.data_description.get("Id")
@@ -428,7 +440,7 @@ class DataSet(BaseModel):
                 column_path = self.data_description.get("Path")
                 if "Path" not in self.metadata.columns:
                     if os.path.exists(os.path.join(self.data_path,
-                                                   self.metadata[column_id][0])):
+                                                   self.metadata[column_id].values[0])):
                         # Lambda function to create the path
                         self.metadata[column_path] = self.metadata[column_id].apply(
                             lambda x: os.path.join(self.data_path, x))
@@ -449,42 +461,88 @@ class DataSet(BaseModel):
         except Exception as e:
             return BasicResponse(success=False, status_code=500, message=f"Error loading the dataset: {e}")
 
-    def get_subsets(self):
-        x_train, y_train = make_subset_4_dataframe(self.metadata, "train")
-        x_dev, y_dev = make_subset_4_dataframe(self.metadata, "dev")
+    def get_subsets(self, frame_level: bool = True) -> tuple:
+        x_train, y_train = self.subset_frame_level_to_train()
+        x_dev, y_dev = self.subset_frame_level_to_dev()
 
         return x_train, y_train, x_dev, y_dev
 
+    def subset_frame_level_to_train(self) -> tuple[ndarray, ndarray]:
+        """
+        Make a subset of the DataFrame with the specified subset.
 
-def make_subset_4_dataframe(df: pd.DataFrame, subset: str) -> tuple[ndarray, ndarray]:
-    """
-    Make a subset of the DataFrame with the specified subset.
-    """
-    # Create a copy of the DataFrame
-    df_ = df.copy()
-    df_subset = df_[df_["DataSet"] == subset]
-    # Iterate over the rows
-    x_subset = np.array([])
-    y_subset = np.array([])
-    for index, row in tqdm(df_subset.iterrows(), total=len(df_subset), desc="Processing data"):
-        # Load the audio
-        path_to_audio = row["FilePath"]
-        s, sr = read_audio(path_to_audio)
-        mfcc = librosa.feature.mfcc(y=s, sr=sr)
-        mfcc = mfcc.T
+        :return: Subset of the DataFrame as arrays.
+        :rtype: tuple[ndarray, ndarray]
+        """
+        # Create a copy of the DataFrame
+        df_ = self.metadata.copy()
+        df_subset = df_[df_["DataSet"] == "train"]
+        # Iterate over the rows
+        x_subset = np.array([])
+        y_subset = np.array([])
+        for index, row in tqdm(df_subset.iterrows(), total=len(df_subset), desc="Processing data"):
+            # Load the audio
+            path_to_audio = row["FilePath"]
+            s, sr = read_audio(path_to_audio)
+            mfcc = librosa.feature.mfcc(y=s, sr=sr)
+            mfcc = mfcc.T
 
-        # Create an array size of the mfcc
-        label = np.array([row["Label"] for _ in range(mfcc.shape[0])])
+            # Create an array size of the mfcc
+            label = np.array([row["Label"] for _ in range(mfcc.shape[0])])
 
-        # Add the mfcc and the label to the X and y arrays
-        if x_subset.size == 0:
-            x_subset = mfcc
-            y_subset = label
-        else:
-            x_subset = np.vstack((x_subset, mfcc))
-            y_subset = np.vstack((y_subset, label))
+            # Add the mfcc and the label to the X and y arrays
+            if x_subset.size == 0:
+                x_subset = mfcc
+                y_subset = label
+            else:
+                x_subset = np.vstack((x_subset, mfcc))
+                y_subset = np.vstack((y_subset, label))
 
-    return x_subset, y_subset
+        return x_subset, y_subset
+
+    def subset_frame_level_to_dev(self) -> tuple[list, list]:
+        """
+        Make a subset of the DataFrame with the specified subset and return the data as lists.
+
+        :return: Subset of the DataFrame as lists.
+        :rtype: tuple[list, list]
+        """
+        # Create a copy of the DataFrame
+        df_ = self.metadata.copy()
+        df_subset = df_[df_["DataSet"] == "dev"]
+        # Iterate over the rows
+        x_subset = []
+        y_subset = []
+        for index, row in tqdm(df_subset.iterrows(), total=len(df_subset), desc="Processing data"):
+            # Load the audio
+            path_to_audio = row["FilePath"]
+            s, sr = read_audio(path_to_audio)
+            mfcc = librosa.feature.mfcc(y=s, sr=sr)
+            mfcc = mfcc.T
+
+            # Get the label
+            label = row["Label"]
+
+            # Append the mfcc and the label to the X and y arrays
+            x_subset.append(mfcc)
+            y_subset.append(label)
+
+        return x_subset, y_subset
+
+    def sample_fraction(self, fraction: float = 0.001) -> BasicResponse:
+        """
+        Sample a fraction of the dataset.
+
+        :param fraction: Fraction to sample.
+        :type fraction: float
+        :return: BasicResponse object.
+        :rtype: BasicResponse
+        """
+        try:
+            self.metadata = self.metadata.sample(frac=fraction)
+            return BasicResponse(success=True, status_code=200, message="Dataset sampled")
+        except Exception as e:
+            return BasicResponse(success=False, status_code=500, message=f"Error sampling the dataset: {e}")
 
 
 class ModelFactory:
@@ -590,6 +648,29 @@ class ModelFactory:
                                 data={"scores": scores})
         except Exception as e:
             return BasicResponse(success=False, status_code=500, message=f"Error performing cross-validation: {e}")
+
+    def perform_frame_level_validation(self, pipeline: Pipeline, X: ndarray, y: ndarray) -> BasicResponse:
+        """
+        Perform frame-level validation with the specified pipeline and data.
+
+        :param pipeline: Pipeline to use.
+        :type pipeline: Pipeline
+        :param X: Input data.
+        :type X: ndarray
+        :param y: Target data.
+        :type y: ndarray
+        :return: Scores of the frame-level validation process for the specified pipeline.
+        :rtype: BasicResponse
+        """
+        try:
+            scores = cross_validate(pipeline, X, y, cv=self.cross_val_folds, scoring=self.scoring, n_jobs=-1, verbose=1)
+            return DataResponse(success=True,
+                                status_code=200,
+                                message="Frame-level validation completed",
+                                data={"scores": scores})
+        except Exception as e:
+            return BasicResponse(success=False, status_code=500,
+                                 message=f"Error performing frame-level validation: {e}")
 
     @staticmethod
     def fit_pipeline(pipeline, X, y) -> BasicResponse:
