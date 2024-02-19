@@ -14,6 +14,7 @@ import librosa.feature
 import mlflow
 import numpy as np
 import pandas as pd
+from joblib import parallel_backend
 from mlflow import MlflowClient
 from numpy import ndarray
 from pydantic import BaseModel, Field, ConfigDict
@@ -605,7 +606,8 @@ class ModelFactory:
         :rtype: BasicResponse
         """
         try:
-            pipeline.fit(X, y)
+            with parallel_backend('loky', n_jobs=-1):
+                pipeline.fit(X, y)
             return DataResponse(success=True, status_code=200, message="Pipeline fitted", data={"pipeline": pipeline})
         except Exception as e:
             return BasicResponse(success=False, status_code=500, message=f"Error fitting the pipeline: {e}")
