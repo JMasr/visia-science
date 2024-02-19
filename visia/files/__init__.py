@@ -5,7 +5,7 @@ import pickle
 import librosa
 import numpy as np
 
-from visia.responses.basic_responses import BasicResponse
+from responses.basic_responses import BasicResponse
 
 
 def identify_file_type(file_path: str) -> str:
