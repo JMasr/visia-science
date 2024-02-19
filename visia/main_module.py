@@ -21,7 +21,8 @@ from pydantic import BaseModel, Field, ConfigDict
 from sklearn import impute
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import make_scorer, f1_score, recall_score, precision_score
+from sklearn.metrics import make_scorer, f1_score, recall_score, precision_score, accuracy_score, \
+    precision_recall_fscore_support
 from sklearn.model_selection import KFold, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -30,7 +31,7 @@ from tqdm import tqdm
 from config.visia_config import BasicConfig
 from database import BasicDataBase
 from dataset.dataset import AudioStream
-from files import read_audio
+from files import read_audio, load_file, save_file
 from logger import BasicLogger
 from responses.basic_responses import BasicResponse, DataResponse
 
@@ -184,10 +185,10 @@ class BasicExperiment:
                 path_suffix = (f"_{train_config.get('experiment_name', 'default_exp')}"
                                f"_{model.get('model_name', 'default_model')}"
                                f"_{feat.get('feat_name', 'default_feat')}")
-                x_train_path = os.path.join(results_path, f"x_train_{path_suffix}.npy")
-                x_dev_path = os.path.join(results_path, f"x_dev_{path_suffix}.npy")
-                y_train_path = os.path.join(results_path, f"y_train_{path_suffix}.npy")
-                y_dev_path = os.path.join(results_path, f"y_dev_{path_suffix}.npy")
+                x_train_path = os.path.join(results_path, f"x_train_{path_suffix}.pkl")
+                x_dev_path = os.path.join(results_path, f"x_dev_{path_suffix}.pkl")
+                y_train_path = os.path.join(results_path, f"y_train_{path_suffix}.pkl")
+                y_dev_path = os.path.join(results_path, f"y_dev_{path_suffix}.pkl")
 
                 if (os.path.exists(x_train_path)
                         and os.path.exists(x_dev_path)
@@ -196,18 +197,18 @@ class BasicExperiment:
 
                     self.logger.info("Loading data from file")
                     # Load the data
-                    x_train = np.load(x_train_path)
-                    x_dev = np.load(x_dev_path)
-                    y_train = np.load(y_train_path)
-                    y_dev = np.load(y_dev_path)
+                    x_train = load_file(x_train_path)
+                    x_dev = load_file(x_dev_path)
+                    y_train = load_file(y_train_path)
+                    y_dev = load_file(y_dev_path)
                 else:
                     self.logger.info("Processing data")
                     x_train, y_train, x_dev, y_dev = self.dataset.get_subsets()
                     # Save the data
-                    np.save(x_train_path, x_train)
-                    np.save(x_dev_path, x_dev)
-                    np.save(y_train_path, y_train)
-                    np.save(y_dev_path, y_dev)
+                    save_file(x_train_path, x_train)
+                    save_file(x_dev_path, x_dev)
+                    save_file(y_train_path, y_train)
+                    save_file(y_dev_path, y_dev)
                 self.logger.info("Data ready for training!")
             except Exception as e:
                 return BasicResponse(success=False, status_code=500, message=f"Error processing the data: {e}")
@@ -230,23 +231,14 @@ class BasicExperiment:
                 if not ft_response_with_pipeline_trained.success:
                     return ft_response_with_pipeline_trained
 
-                ft_response_with_scores = factory.perform_cross_validation(pipeline_trained,
-                                                                           x_dev,
-                                                                           y_dev)
+                ft_response_with_scores = factory.validation_frame_lv(pipeline_trained,
+                                                                      x_dev,
+                                                                      y_dev)
                 if not ft_response_with_scores.success:
                     return ft_response_with_scores
 
                 scores = ft_response_with_scores.data.get("scores")
-                scores_message = (f"\tAccuracy: "
-                                  f"{scores['test_accuracy'].mean()} ({scores['test_accuracy'].std()})\n"
-                                  f"\tF1-score: "
-                                  f"{scores['test_f1'].mean()} ({scores['test_f1'].std()})\n"
-                                  f"\tRecall: "
-                                  f"{scores['test_recall'].mean()} ({scores['test_recall'].std()})\n"
-                                  f"\tPrecision: "
-                                  f"{scores['test_precision'].mean()} ({scores['test_precision'].std()})\n"
-                                  f"\tSensitivity: "
-                                  f"{scores['test_sensitivity'].mean()} ({scores['test_sensitivity'].std()})")
+                scores_message = "\n".join([f"\t\t\t\t\t\t\t\t\t\t\t\t\t -{k}: {v}-" for k, v in scores.items()])
                 self.logger.info(f"Model trained: {model.get('model_name')}")
                 self.logger.info(f"*** Scores ***\n{scores_message}")
 
@@ -462,8 +454,11 @@ class DataSet(BaseModel):
             return BasicResponse(success=False, status_code=500, message=f"Error loading the dataset: {e}")
 
     def get_subsets(self, frame_level: bool = True) -> tuple:
-        x_train, y_train = self.subset_frame_level_to_train()
-        x_dev, y_dev = self.subset_frame_level_to_dev()
+        if frame_level:
+            x_train, y_train = self.subset_frame_level_to_train()
+            x_dev, y_dev = self.subset_frame_level_to_dev()
+        else:
+            x_train, y_train, x_dev, y_dev = [], [], [], []
 
         return x_train, y_train, x_dev, y_dev
 
@@ -627,7 +622,8 @@ class ModelFactory:
         except Exception as e:
             return BasicResponse(success=False, status_code=500, message=f"Error creating the pipeline: {e}")
 
-    def perform_cross_validation(self, pipeline: Pipeline, X: ndarray, y: ndarray) -> BasicResponse:
+    @staticmethod
+    def validation_frame_lv(pipeline: Pipeline, X: ndarray, y_true: ndarray) -> BasicResponse:
         """
         Perform cross-validation with the specified pipeline and data.
 
@@ -635,21 +631,54 @@ class ModelFactory:
         :type pipeline: Pipeline
         :param X: Input data.
         :type X: ndarray
-        :param y: Target data.
-        :type y: ndarray
+        :param y_true: Target data.
+        :type y_true: ndarray
         :return: Scores of the cross-validation process for the specified pipeline.
         :rtype: BasicResponse
         """
         try:
-            scores = cross_validate(pipeline, X, y, cv=self.cross_val_folds, scoring=self.scoring, n_jobs=-1, verbose=1)
+            y_score = np.ndarray([])
+            for x_dev in X:
+                x_pred = pipeline.predict(x_dev)
+                x_pred_voting = np.sum(x_pred, axis=0)
+
+                # Create an array with all 0 but with 1 in the position of the max value
+                y_pred = np.zeros(len(x_pred_voting))
+                y_pred[np.argmax(x_pred_voting)] = 1
+                if y_score.size == 1:
+                    y_score = y_pred
+                else:
+                    y_score = np.vstack((y_score, y_pred))
+
+            #  Convert the y_true list to a np.ndarray
+            y_true = np.array(y_true)
+
+            # Convert one-hot encoding to class labels
+            y_true_labels = np.argmax(y_true, axis=1)
+            y_score_labels = np.argmax(y_score, axis=1)
+
+            # Calculate accuracy
+            acc = accuracy_score(y_true_labels, y_score_labels)
+            precision, recall, f_beta, support = precision_recall_fscore_support(y_true_labels, y_score_labels,
+                                                                                 average='weighted')
+            f1_scr = f1_score(y_true_labels, y_score_labels, average='weighted')
+
+            # Create a dictionary of scores
+            dict_scores = {'acc_score': float(acc),
+                           'f1_scr': float(f1_scr),
+                           'f_beta': float(f_beta),
+                           'recall': float(recall),
+                           'precision': float(precision),
+                           }
+
             return DataResponse(success=True,
                                 status_code=200,
                                 message="Cross-validation completed",
-                                data={"scores": scores})
+                                data={"scores": dict_scores})
         except Exception as e:
             return BasicResponse(success=False, status_code=500, message=f"Error performing cross-validation: {e}")
 
-    def perform_frame_level_validation(self, pipeline: Pipeline, X: ndarray, y: ndarray) -> BasicResponse:
+    def perform_cross_validation(self, pipeline: Pipeline, X: ndarray, y: ndarray) -> BasicResponse:
         """
         Perform frame-level validation with the specified pipeline and data.
 
