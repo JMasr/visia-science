@@ -8,21 +8,21 @@ This is a module for running the Visia-Science main Pipeline.
 import argparse
 import os
 import time
-import importlib
-from typing import Annotated, Optional, Any, Tuple
+from typing import Annotated, Optional, Any
 
 import librosa.feature
+import mlflow
 import numpy as np
 import pandas as pd
 from mlflow import MlflowClient
-from numpy import ndarray, dtype
+from numpy import ndarray
 from pydantic import BaseModel, Field, ConfigDict
-from sklearn import impute, preprocessing
+from sklearn import impute
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import make_scorer, f1_score, recall_score, precision_score
-from sklearn.model_selection import KFold, cross_validate, cross_val_score
-from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.model_selection import KFold, cross_validate
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
@@ -87,7 +87,8 @@ class BasicExperiment:
                 self.logger.error(db_response.get_as_str(module="MainModule", action="Load data to database"))
 
         # TRAIN THE MODEL
-        train_response = self.train_loop()
+        train_config = self.exp_config.train_config
+        train_response = self.train_loop(train_config)
         if train_response.success:
             self.logger.info(train_response.get_as_str(module="MainModule", action="Train model"))
         else:
@@ -160,71 +161,112 @@ class BasicExperiment:
             return BasicResponse(success=False, status_code=500,
                                  message=f"Error checking if the dataset is in the database: {e}")
 
-    def train_loop(self) -> BasicResponse:
+    def train_loop(self, train_config: dict) -> BasicResponse:
         # GET THE SUBSETS
-        train_config = self.exp_config.train_config
         results_path = train_config.get("experiment_folder", os.path.join(self.exp_config.root_path, "results"))
         if not os.path.exists(results_path):
             os.makedirs(results_path)
 
-        x_train_path = os.path.join(results_path, f"x_train_{train_config.get('experiment_name', 'exp')}.npy")
-        x_dev_path = os.path.join(results_path, f"x_dev_{train_config.get('experiment_name', 'exp')}.npy")
-        y_train_path = os.path.join(results_path, f"y_train_{train_config.get('experiment_name', 'exp')}.npy")
-        y_dev_path = os.path.join(results_path, f"y_dev_{train_config.get('experiment_name', 'exp')}.npy")
-
-        try:
-            if (os.path.exists(x_train_path)
-                    and os.path.exists(x_dev_path)
-                    and os.path.exists(y_train_path)
-                    and os.path.exists(y_dev_path)):
-
-                self.logger.info("Loading data from file")
-                # Load the data
-                x_train = np.load(x_train_path)
-                x_dev = np.load(x_dev_path)
-                y_train = np.load(y_train_path)
-                y_dev = np.load(y_dev_path)
-            else:
-                self.logger.info("Processing data")
-                x_train, y_train, x_dev, y_dev = self.dataset.get_subsets()
-                # Save the data
-                np.save(x_train_path, x_train)
-                np.save(x_dev_path, x_dev)
-                np.save(y_train_path, y_train)
-                np.save(y_dev_path, y_dev)
-            self.logger.info("Data ready for training!")
-        except Exception as e:
-            return BasicResponse(success=False, status_code=500, message=f"Error processing the data: {e}")
-
         # CONFIGURE THE MODEL AND TRAIN
-        model_params = train_config.get("models", None)
-        if model_params is None:
+        model_params: list = train_config.get("models", [])
+        if not model_params:
             return BasicResponse(success=False, status_code=404, message="No model parameters found")
 
-        try:
-            for model in model_params:
+        feats_params: list = train_config.get("feats", [])
+        if not feats_params:
+            return BasicResponse(success=False, status_code=404, message="No features parameters found")
+
+        for feat, model in zip(feats_params, model_params):
+            # PROCESS THE DATA
+            try:
+                self.logger.info("Processing data")
+                path_suffix = (f"_{train_config.get('experiment_name', 'default_exp')}"
+                               f"_{model.get('model_name', 'default_model')}"
+                               f"_{feat.get('feat_name', 'default_feat')}")
+                x_train_path = os.path.join(results_path, f"x_train_{path_suffix}.npy")
+                x_dev_path = os.path.join(results_path, f"x_dev_{path_suffix}.npy")
+                y_train_path = os.path.join(results_path, f"y_train_{path_suffix}.npy")
+                y_dev_path = os.path.join(results_path, f"y_dev_{path_suffix}.npy")
+
+                if (os.path.exists(x_train_path)
+                        and os.path.exists(x_dev_path)
+                        and os.path.exists(y_train_path)
+                        and os.path.exists(y_dev_path)):
+
+                    self.logger.info("Loading data from file")
+                    # Load the data
+                    x_train = np.load(x_train_path)
+                    x_dev = np.load(x_dev_path)
+                    y_train = np.load(y_train_path)
+                    y_dev = np.load(y_dev_path)
+                else:
+                    self.logger.info("Processing data")
+                    x_train, y_train, x_dev, y_dev = self.dataset.get_subsets()
+                    # Save the data
+                    np.save(x_train_path, x_train)
+                    np.save(x_dev_path, x_dev)
+                    np.save(y_train_path, y_train)
+                    np.save(y_dev_path, y_dev)
+                self.logger.info("Data ready for training!")
+            except Exception as e:
+                return BasicResponse(success=False, status_code=500, message=f"Error processing the data: {e}")
+
+            # TRAIN THE MODEL
+            try:
                 self.logger.info(f"Training model: {model.get('model_name')}")
+                model["random_state"] = train_config.get("random_state", 42)
 
                 factory = ModelFactory(**model)
-                model_instance = factory.create_model_instance()
-                pipeline = factory.create_pipeline(model_instance)
-                pipeline_trained = factory.fit_pipeline(pipeline, x_train, y_train)
-                scores = factory.perform_cross_validation(pipeline_trained, x_dev, y_dev)
-                scores_message = (f"\tAccuracy: {scores['test_accuracy'].mean()} ({scores['test_accuracy'].std()})\n"
-                                  f"\tF1-score: {scores['test_f1'].mean()} ({scores['test_f1'].std()})\n"
-                                  f"\tRecall: {scores['test_recall'].mean()} ({scores['test_recall'].std()})\n"
-                                  f"\tPrecision: {scores['test_precision'].mean()} ({scores['test_precision'].std()})\n"
-                                  f"\tSensitivity: {scores['test_sensitivity'].mean()} ({scores['test_sensitivity'].std()})")
+                ft_response_with_model = factory.create_model_instance()
+                ft_response_with_pipeline = factory.create_pipeline(ft_response_with_model.data.get("model"))
+                if not ft_response_with_pipeline.success:
+                    return ft_response_with_pipeline
+
+                ft_response_with_pipeline_trained = factory.fit_pipeline(ft_response_with_pipeline.data.get("pipeline"),
+                                                                         x_train,
+                                                                         y_train)
+                pipeline_trained = ft_response_with_pipeline_trained.data.get("pipeline")
+                if not ft_response_with_pipeline_trained.success:
+                    return ft_response_with_pipeline_trained
+
+                ft_response_with_scores = factory.perform_cross_validation(pipeline_trained,
+                                                                           x_dev,
+                                                                           y_dev)
+                if not ft_response_with_scores.success:
+                    return ft_response_with_scores
+
+                scores = ft_response_with_scores.data.get("scores")
+                scores_message = (f"\tAccuracy: "
+                                  f"{scores['test_accuracy'].mean()} ({scores['test_accuracy'].std()})\n"
+                                  f"\tF1-score: "
+                                  f"{scores['test_f1'].mean()} ({scores['test_f1'].std()})\n"
+                                  f"\tRecall: "
+                                  f"{scores['test_recall'].mean()} ({scores['test_recall'].std()})\n"
+                                  f"\tPrecision: "
+                                  f"{scores['test_precision'].mean()} ({scores['test_precision'].std()})\n"
+                                  f"\tSensitivity: "
+                                  f"{scores['test_sensitivity'].mean()} ({scores['test_sensitivity'].std()})")
                 self.logger.info(f"Model trained: {model.get('model_name')}")
                 self.logger.info(f"*** Scores ***\n{scores_message}")
+
+                # Record the experiment
+                if self.mlflow_server.is_up().success:
+                    self.logger.info("Recording experiment")
+                    # Add model parameters to the ft_response_with_scores
+                    ft_response_with_scores.data["model_params"] = model
+                    record_response = self.mlflow_server.record_experiment(train_config, ft_response_with_scores)
+                    if record_response.success:
+                        self.logger.info(record_response.get_as_str(module="MainModule", action="Record experiment"))
+                    else:
+                        self.logger.error(record_response.get_as_str(module="MainModule", action="Record experiment"))
 
                 return DataResponse(success=True,
                                     status_code=200,
                                     message="Model Trained",
                                     data=dict(scores=scores, model=pipeline_trained))
 
-        except Exception as e:
-            return BasicResponse(success=False, status_code=500, message=f"Error training the model: {e}")
+            except Exception as e:
+                return BasicResponse(success=False, status_code=500, message=f"Error training the model: {e}")
 
 
 class MLFlowServer:
@@ -245,7 +287,6 @@ class MLFlowServer:
 
         # Set the MLFlow server
         self.mlflow_url = mlflow_config.get("mlflow_url", "http://localhost:5000")
-        self.mlflow_experiment_name = mlflow_config.get("mlflow_experiment_name", f"Experiment_{time.time()}")
         # Set the MLFlow client
         self.mlflow_client = MlflowClient(tracking_uri=self.mlflow_url)
 
@@ -270,6 +311,53 @@ class MLFlowServer:
             return BasicResponse(success=True, status_code=200, message=all_experiments)
         except Exception as e:
             return BasicResponse(success=False, status_code=500, message=f"Error listing experiments: {e}")
+
+    def record_experiment(self, training_config: dict, training_response: BasicResponse) -> BasicResponse:
+        try:
+            # Define the experiment
+            mlflow.set_tracking_uri(self.mlflow_url)
+            exp_name = training_config.get("experiment_name", "exp")
+            mlflow.set_experiment(exp_name)
+
+            model_name = training_response.data.get("model_params").get("model_name")
+            with mlflow.start_run(run_name=f'{model_name}_MFCC_{time.strftime("%Y-%m-%d-%H-%M-%S")}'):
+                # Log the parameters
+                mlflow.log_params(training_response.data.get("model_params"))
+                mlflow.log_param('random_state', training_config.get("random_state", "UNKNOWN"))
+
+                # Log the metrics
+                mlflow_metric = self.post_process_metrics(training_response.data.get("scores"))
+                mlflow.log_metrics(mlflow_metric)
+
+            return BasicResponse(success=True, status_code=200, message="Experiment recorded")
+        except Exception as e:
+            return BasicResponse(success=False, status_code=500, message=f"Error recording the experiment: {e}")
+
+    @staticmethod
+    def post_process_metrics(all_scores: dict) -> dict:
+        """
+        Post-process the scores to make them compatible with MLFlow.
+
+        :param all_scores: Scores to post-process.
+        :type all_scores: dict
+        :return: Post-processed scores.
+        :rtype: dict
+        """
+
+        mlflow_metric = {}
+        for k, v in all_scores.items():
+            if isinstance(v, (int, float)):
+                mlflow_metric[k] = v
+            elif isinstance(v, np.ndarray):
+                mlflow_metric[f"{k}_mean"] = v.mean()
+                mlflow_metric[f"{k}_std"] = v.std()
+                mlflow_metric[f"{k}_min"] = v.min()
+                mlflow_metric[f"{k}_max"] = v.max()
+                mlflow_metric[f"{k}_median"] = np.median(v)
+                for i, val in enumerate(v):
+                    mlflow_metric[f"{k}_fold_{i}"] = val
+
+        return mlflow_metric
 
 
 class DataSet(BaseModel):
@@ -432,31 +520,95 @@ class ModelFactory:
         else:
             self.scoring = scoring
 
-    def create_model_instance(self):
+    def create_model_instance(self) -> BasicResponse:
+        """
+        Create a model instance with the specified parameters.
 
-        if self.model_name == "LogisticRegression":
-            model_instance = LogisticRegression(**self.model_params)
-        elif self.model_name == "RandomForestClassifier":
-            model_instance = RandomForestClassifier(**self.model_params)
-        else:
-            model_instance = None
+        :return: Model instance with the specified parameters.
+        :rtype: Any
+        """
+        try:
+            if self.model_name == "LogisticRegression":
+                model_instance = LogisticRegression(**self.model_params)
+            elif self.model_name == "RandomForestClassifier":
+                model_instance = RandomForestClassifier(**self.model_params)
+            else:
+                model_instance = None
 
-        return model_instance
+            if model_instance is None:
+                return BasicResponse(success=False,
+                                     status_code=404,
+                                     message="Model selected not supported yet.")
+            else:
+                return DataResponse(success=True,
+                                    status_code=200,
+                                    message="Model created",
+                                    data={"model": model_instance})
+        except Exception as e:
+            return BasicResponse(success=False,
+                                 status_code=500,
+                                 message=f"Error creating the model instance: {e}")
 
-    def create_pipeline(self, model_instance):
-        steps = [('preprocessor_{}'.format(idx), preprocessor) for idx, preprocessor in enumerate(self.preprocessors)]
-        steps.append(('model', model_instance))
-        pipeline = Pipeline(steps)
-        return pipeline
+    def create_pipeline(self, model_instance: Any) -> BasicResponse:
+        """
+        Create a pipeline with the specified preprocessors and model instance.
 
-    def perform_cross_validation(self, pipeline, X, y):
-        scores = cross_validate(pipeline, X, y, cv=self.cross_val_folds, scoring=self.scoring, n_jobs=-1, verbose=1)
-        return scores
+        :param model_instance: Model instance to use.
+        :type model_instance: Any
+        :return: Pipeline with the specified preprocessors and model instance.
+        :rtype: Pipeline
+        """
+        try:
+            steps = [('preprocessor_{}'.format(idx), preprocessor)
+                     for idx, preprocessor in enumerate(self.preprocessors)]
+            steps.append(('model', model_instance))
+            pipeline = Pipeline(steps)
+
+            return DataResponse(success=True, status_code=200, message="Pipeline created", data={"pipeline": pipeline})
+        except Exception as e:
+            return BasicResponse(success=False, status_code=500, message=f"Error creating the pipeline: {e}")
+
+    def perform_cross_validation(self, pipeline: Pipeline, X: ndarray, y: ndarray) -> BasicResponse:
+        """
+        Perform cross-validation with the specified pipeline and data.
+
+        :param pipeline: Pipeline to use.
+        :type pipeline: Pipeline
+        :param X: Input data.
+        :type X: ndarray
+        :param y: Target data.
+        :type y: ndarray
+        :return: Scores of the cross-validation process for the specified pipeline.
+        :rtype: BasicResponse
+        """
+        try:
+            scores = cross_validate(pipeline, X, y, cv=self.cross_val_folds, scoring=self.scoring, n_jobs=-1, verbose=1)
+            return DataResponse(success=True,
+                                status_code=200,
+                                message="Cross-validation completed",
+                                data={"scores": scores})
+        except Exception as e:
+            return BasicResponse(success=False, status_code=500, message=f"Error performing cross-validation: {e}")
 
     @staticmethod
-    def fit_pipeline(pipeline, X, y):
-        pipeline.fit(X, y)
-        return pipeline
+    def fit_pipeline(pipeline, X, y) -> BasicResponse:
+        """
+        Fit the pipeline with the specified data.
+
+        :param pipeline: Pipeline to fit.
+        :type pipeline: Pipeline
+        :param X: Input data.
+        :type X: ndarray
+        :param y: Target data.
+        :type y: ndarray
+        :return: Fitted pipeline with the specified data.
+        :rtype: BasicResponse
+        """
+        try:
+            pipeline.fit(X, y)
+            return DataResponse(success=True, status_code=200, message="Pipeline fitted", data={"pipeline": pipeline})
+        except Exception as e:
+            return BasicResponse(success=False, status_code=500, message=f"Error fitting the pipeline: {e}")
 
 
 def standardization_method_odyssey(df_metadata: pd.DataFrame) -> [pd.DataFrame, dict]:
