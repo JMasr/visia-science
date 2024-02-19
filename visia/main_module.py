@@ -450,8 +450,8 @@ class DataSet(BaseModel):
             return BasicResponse(success=False, status_code=500, message=f"Error loading the dataset: {e}")
 
     def get_subsets(self):
-        x_train, y_train = make_subset_4_dataframe(self.metadata.sample(frac=0.001), "train")
-        x_dev, y_dev = make_subset_4_dataframe(self.metadata.sample(frac=0.001), "dev")
+        x_train, y_train = make_subset_4_dataframe(self.metadata, "train")
+        x_dev, y_dev = make_subset_4_dataframe(self.metadata, "dev")
 
         return x_train, y_train, x_dev, y_dev
 
