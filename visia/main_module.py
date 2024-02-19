@@ -10,6 +10,7 @@ import os
 import time
 from typing import Annotated, Optional, Any
 
+import joblib
 import librosa.feature
 import mlflow
 import numpy as np
@@ -164,6 +165,7 @@ class BasicExperiment:
                                  message=f"Error checking if the dataset is in the database: {e}")
 
     def train_loop(self, train_config: dict) -> BasicResponse:
+
         # GET THE SUBSETS
         results_path = train_config.get("experiment_folder", os.path.join(self.exp_config.root_path, "results"))
         if not os.path.exists(results_path):
@@ -252,6 +254,14 @@ class BasicExperiment:
                         self.logger.info(record_response.get_as_str(module="MainModule", action="Record experiment"))
                     else:
                         self.logger.error(record_response.get_as_str(module="MainModule", action="Record experiment"))
+
+                # Save the pipeline
+                pipeline_path = os.path.join(results_path, f"pipeline_{path_suffix}.pkl")
+                save_response = factory.save_pipeline(pipeline_trained, pipeline_path)
+                if save_response.success:
+                    self.logger.info(save_response.get_as_str(module="MainModule", action="Save pipeline"))
+                else:
+                    self.logger.error(save_response.get_as_str(module="MainModule", action="Save pipeline"))
 
                 return DataResponse(success=True,
                                     status_code=200,
@@ -623,6 +633,27 @@ class ModelFactory:
             return BasicResponse(success=False, status_code=500, message=f"Error creating the pipeline: {e}")
 
     @staticmethod
+    def fit_pipeline(pipeline: Pipeline, X, y) -> BasicResponse:
+        """
+        Fit the pipeline with the specified data.
+
+        :param pipeline: Pipeline to fit.
+        :type pipeline: Pipeline
+        :param X: Input data.
+        :type X: ndarray
+        :param y: Target data.
+        :type y: ndarray
+        :return: Fitted pipeline with the specified data.
+        :rtype: BasicResponse
+        """
+        try:
+            with parallel_backend('loky', n_jobs=-1):
+                pipeline.fit(X, y)
+            return DataResponse(success=True, status_code=200, message="Pipeline fitted", data={"pipeline": pipeline})
+        except Exception as e:
+            return BasicResponse(success=False, status_code=500, message=f"Error fitting the pipeline: {e}")
+
+    @staticmethod
     def validation_frame_lv(pipeline: Pipeline, X: ndarray, y_true: ndarray) -> BasicResponse:
         """
         Perform cross-validation with the specified pipeline and data.
@@ -702,25 +733,38 @@ class ModelFactory:
                                  message=f"Error performing frame-level validation: {e}")
 
     @staticmethod
-    def fit_pipeline(pipeline, X, y) -> BasicResponse:
+    def save_pipeline(pipeline: Pipeline, path: str) -> BasicResponse:
         """
-        Fit the pipeline with the specified data.
+        Save the pipeline to the specified path.
 
-        :param pipeline: Pipeline to fit.
+        :param pipeline: Pipeline to save.
         :type pipeline: Pipeline
-        :param X: Input data.
-        :type X: ndarray
-        :param y: Target data.
-        :type y: ndarray
-        :return: Fitted pipeline with the specified data.
+        :param path: Path to save the pipeline.
+        :type path: str
+        :return: BasicResponse object.
         :rtype: BasicResponse
         """
         try:
-            with parallel_backend('loky', n_jobs=-1):
-                pipeline.fit(X, y)
-            return DataResponse(success=True, status_code=200, message="Pipeline fitted", data={"pipeline": pipeline})
+            joblib.dump(pipeline, path)
+            return BasicResponse(success=True, status_code=200, message="Pipeline saved")
         except Exception as e:
-            return BasicResponse(success=False, status_code=500, message=f"Error fitting the pipeline: {e}")
+            return BasicResponse(success=False, status_code=500, message=f"Error saving the pipeline: {e}")
+
+    @staticmethod
+    def load_pipeline(path: str) -> BasicResponse:
+        """
+        Load the pipeline from the specified path.
+
+        :param path: Path to load the pipeline from.
+        :type path: str
+        :return: Pipeline loaded from the specified path.
+        :rtype: BasicResponse
+        """
+        try:
+            pipeline = joblib.load(path)
+            return DataResponse(success=True, status_code=200, message="Pipeline loaded", data={"pipeline": pipeline})
+        except Exception as e:
+            return BasicResponse(success=False, status_code=500, message=f"Error loading the pipeline: {e}")
 
 
 def standardization_method_odyssey(df_metadata: pd.DataFrame) -> [pd.DataFrame, dict]:
