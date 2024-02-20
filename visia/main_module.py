@@ -43,7 +43,7 @@ class BasicExperiment:
     The results of the experiment are stored in the results' folder.
     """
 
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, train: bool = True):
         """
         Initialize the class with the specified configuration.
 
@@ -91,11 +91,19 @@ class BasicExperiment:
 
         # TRAIN THE MODEL
         train_config = self.exp_config.train_config
-        train_response = self.train_loop(train_config)
-        if train_response.success:
-            self.logger.info(train_response.get_as_str(module="MainModule", action="Train model"))
+        if train:
+            train_response = self.train_loop(train_config)
+            if train_response.success:
+                self.logger.info(train_response.get_as_str(module="MainModule", action="Train model"))
+            else:
+                self.logger.error(train_response.get_as_str(module="MainModule", action="Train model"))
         else:
-            self.logger.error(train_response.get_as_str(module="MainModule", action="Train model"))
+            # EVALUATE THE MODEL
+            eval_response = self.eval_loop(train_config)
+            if eval_response.success:
+                self.logger.info(eval_response.get_as_str(module="MainModule", action="Evaluate model"))
+            else:
+                self.logger.error(eval_response.get_as_str(module="MainModule", action="Evaluate model"))
 
     def data2database(self) -> BasicResponse:
         """
@@ -271,6 +279,72 @@ class BasicExperiment:
             except Exception as e:
                 return BasicResponse(success=False, status_code=500, message=f"Error training the model: {e}")
 
+    def eval_loop(self, eval_config: dict) -> BasicResponse:
+        # GET THE SUBSETS
+        results_path = eval_config.get("experiment_folder", os.path.join(self.exp_config.root_path, "results"))
+        if not os.path.exists(results_path):
+            os.makedirs(results_path)
+
+        model_params: list = eval_config.get("models", [])
+        if not model_params:
+            return BasicResponse(success=False, status_code=404, message="No model parameters found")
+
+        feats_params: list = eval_config.get("feats", [])
+        if not feats_params:
+            return BasicResponse(success=False, status_code=404, message="No features parameters found")
+
+        for feat, model in zip(feats_params, model_params):
+            # PROCESS THE DATA
+            try:
+                self.logger.info("Processing data")
+                path_suffix = (f"_{eval_config.get('experiment_name', 'default_exp')}"
+                               f"_{model.get('model_name', 'default_model')}"
+                               f"_{feat.get('feat_name', 'default_feat')}")
+                x_dev_path = os.path.join(results_path, f"x_dev_{path_suffix}.pkl")
+                y_dev_path = os.path.join(results_path, f"y_dev_{path_suffix}.pkl")
+
+                if (os.path.exists(x_dev_path)
+                        and os.path.exists(y_dev_path)):
+
+                    self.logger.info("Loading data from file")
+                    # Load the data
+                    x_dev = load_file(x_dev_path)
+                    y_dev = load_file(y_dev_path)
+                else:
+                    message = f"Data not found: {os.path.exists(x_dev_path)} - {os.path.exists(y_dev_path)}"
+                    self.logger.error(message)
+                    return BasicResponse(success=False, status_code=404, message=message)
+                self.logger.info("Data ready for training!")
+            except Exception as e:
+                return BasicResponse(success=False, status_code=500, message=f"Error processing the data: {e}")
+
+            # LOAD THE MODEL
+            try:
+                pipeline_path = os.path.join(results_path, f"pipeline_{path_suffix}.pkl")
+                load_response = ModelFactory.load_pipeline(pipeline_path)
+                if load_response.success:
+                    pipeline = load_response.data.get("pipeline")
+                else:
+                    return load_response
+            except Exception as e:
+                return BasicResponse(success=False, status_code=500, message=f"Error loading the model: {e}")
+
+            # EVALUATE THE MODEL
+            try:
+                self.logger.info(f"Evaluating model: {model.get('model_name')}")
+                ft_response_with_scores = ModelFactory.validation_frame_lv(pipeline, x_dev, y_dev)
+                if not ft_response_with_scores.success:
+                    return ft_response_with_scores
+
+                scores = ft_response_with_scores.data.get("scores")
+                scores_message = "\n".join([f"\t- {k}: {v}-" for k, v in scores.items()])
+                self.logger.info(f"Model evaluated: {model.get('model_name')}")
+                self.logger.info(f"*** Scores ***\n{scores_message}")
+                return ft_response_with_scores
+
+            except Exception as e:
+                return BasicResponse(success=False, status_code=500, message=f"Error evaluating the model: {e}")
+
 
 class MLFlowServer:
     """
@@ -320,13 +394,12 @@ class MLFlowServer:
             # Define the experiment
             mlflow.set_tracking_uri(self.mlflow_url)
             exp_name = training_config.get("experiment_name", "exp")
-            mlflow.set_experiment(exp_name)
-
             model_name = training_response.data.get("model_params").get("model_name")
+
+            mlflow.set_experiment(exp_name)
             with mlflow.start_run(run_name=f'{model_name}_MFCC_{time.strftime("%Y-%m-%d-%H-%M-%S")}'):
                 # Log the parameters
                 mlflow.log_params(training_response.data.get("model_params"))
-                mlflow.log_param('random_state', training_config.get("random_state", "UNKNOWN"))
 
                 # Log the metrics
                 mlflow_metric = self.post_process_metrics(training_response.data.get("scores"))
@@ -669,7 +742,7 @@ class ModelFactory:
         """
         try:
             y_score = np.ndarray([])
-            for x_dev in X:
+            for x_dev in tqdm(X, desc="Processing data"):
                 x_pred = pipeline.predict(x_dev)
                 x_pred_voting = np.sum(x_pred, axis=0)
 
