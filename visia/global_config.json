@@ -54,7 +54,8 @@
   "train_config": {
     "experiment_name": "Odyssey2024",
     "experiment_folder": "/home/gts/projects/jmramirez/odyssey_2024/odyssey_2024_dataset/Experiments/",
-    "models": [{"model_name": "RandomForestClassifier","k_folds": 5, "model_params": {"n_estimators": 100, "max_depth": 2}}],
+    "random_state": 42,
+    "models": [{"model_name": "RandomForestClassifier","k_folds": 2, "model_params": {"n_estimators": 100, "max_depth": 2}}],
     "feats": [{"feat_name": "MFCC",  "n_mfcc": 13, "n_fft": 2048, "hop_length": 512, "n_mels": 128, "fmin": 20, "fmax": 8000}]
   }
 }
